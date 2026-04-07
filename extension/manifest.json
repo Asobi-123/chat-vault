@@ -6,7 +6,7 @@
     "js": "index.js",
     "css": "style.css",
     "author": "Asobi-123",
-    "version": "0.1.0",
-    "description": "提交级即时备份、未保存编辑同步、热恢复和更快落盘。",
+    "version": "0.2.0",
+    "description": "提交级即时备份、未保存编辑同步、热恢复、云保险库和聊天资源恢复。",
     "homePage": "https://github.com/Asobi-123/chat-vault"
 }

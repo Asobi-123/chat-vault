@@ -1,8 +1,9 @@
 import { extension_settings, renderExtensionTemplateAsync } from '../../../extensions.js';
-import { saveChat } from '../../../../script.js';
-import { saveGroupBookmarkChat } from '../../../group-chats.js';
 import { callGenericPopup, POPUP_TYPE, Popup } from '../../../popup.js';
+import { getUserAvatars } from '../../../personas.js';
+import { power_user } from '../../../power-user.js';
 import { waitUntilCondition } from '../../../utils.js';
+import { world_info } from '../../../world-info.js';
 import { applyI18n, initializeI18n, t } from './i18n.js';
 
 const MODULE_NAME = 'third-party/chat-vault';
@@ -19,6 +20,7 @@ const DEFAULT_SETTINGS = {
     previewMessages: 12,
     restoreNameTemplate: '{{chat}} - Chat Vault {{time}}',
     snapshotFileTemplate: '{{name}} - {{mode}} - {{time}}',
+    collapsedSections: {},
 };
 const SNAPSHOT_DELAYS = Object.freeze({
     message_sent: 1800,
@@ -58,7 +60,11 @@ let lastRecoveryToastKey = '';
 let renameBridgeInstalled = false;
 let activeScopeOverride = null;
 let recoveryScopeCache = [];
+let cloudConfigCache = null;
+let cloudManifestCache = null;
+let activeCloudScopeId = '';
 let currentThemeId = 'auto';
+let cloudToolbarBusy = false;
 
 function buildThemeButtons() {
     return Object.keys(THEMES).map((themeId) => {
@@ -72,6 +78,16 @@ function buildThemeButtons() {
 
 function getAppTitle() {
     return t('app.title');
+}
+
+function buildEmptyCloudManifest() {
+    return {
+        scopeCount: 0,
+        snapshotCount: 0,
+        deviceCount: 0,
+        updatedAt: 0,
+        scopes: [],
+    };
 }
 
 function getTriggerDisplayLabel(trigger) {
@@ -92,6 +108,26 @@ function getTriggerDisplayLabel(trigger) {
     return key || t('tags.chatBackup');
 }
 
+function isSectionCollapsed(sectionKey) {
+    const collapsedSections = ensureSettings().collapsedSections;
+    return Boolean(collapsedSections && typeof collapsedSections === 'object' && collapsedSections[sectionKey]);
+}
+
+function buildSectionToggle(sectionKey) {
+    const collapsed = isSectionCollapsed(sectionKey);
+    const label = collapsed ? t('common.expand') : t('common.collapse');
+    const icon = collapsed ? '&#9656;' : '&#9662;';
+    return `<button type="button" class="cvt-section-toggle" data-cvt-toggle-section="${sectionKey}" aria-expanded="${collapsed ? 'false' : 'true'}" aria-label="${label}" title="${label}"><span class="cvt-section-toggle-icon" aria-hidden="true">${icon}</span></button>`;
+}
+
+function getCardBodyClass(sectionKey, { scroll = false } = {}) {
+    return [
+        'cvt-card-body',
+        scroll ? 'cvt-card-body-scroll' : '',
+        isSectionCollapsed(sectionKey) ? 'is-collapsed' : '',
+    ].filter(Boolean).join(' ');
+}
+
 function buildPanelHtml() {
     return `
         <div id="${PANEL_IDS.modal}" class="cvt-modal">
@@ -105,43 +141,68 @@ function buildPanelHtml() {
             <nav class="cvt-tabs">
                 <button type="button" class="cvt-tab active" data-cvt-tab="chat">${t('tabs.chat')}</button>
                 <button type="button" class="cvt-tab" data-cvt-tab="recovery">${t('tabs.recovery')}</button>
+                <button type="button" class="cvt-tab" data-cvt-tab="cloud">${t('tabs.cloud')}</button>
                 <button type="button" class="cvt-tab" data-cvt-tab="settings">${t('tabs.settings')}</button>
             </nav>
             <div class="cvt-body">
                 <section class="cvt-page active" data-cvt-page="chat">
                     <div class="cvt-card">
-                        <div class="cvt-status-row">
-                            <span id="cvt_backend_status" class="cvt-badge" data-kind="idle">${t('status.checking')}</span>
-                            <span id="cvt_current_summary" class="cvt-summary">${t('common.loading')}</span>
+                        <div class="cvt-section-head">
+                            <strong>${t('chat.section.status')}</strong>
+                            <div class="cvt-section-head-actions">
+                                <span id="cvt_current_summary" class="cvt-summary">${t('common.loading')}</span>
+                                ${buildSectionToggle('chat_status')}
+                            </div>
                         </div>
-                        <div class="cvt-toolbar" style="margin-top:10px;">
-                            <button id="cvt_refresh" type="button" class="menu_button">${t('common.refresh')}</button>
-                            <button id="cvt_snapshot_now" type="button" class="menu_button">${t('chat.toolbar.backupNow')}</button>
-                            <button id="cvt_open_recovery" type="button" class="menu_button">${t('chat.toolbar.recovery')}</button>
+                        <div class="${getCardBodyClass('chat_status')}" data-cvt-section="chat_status">
+                            <div class="cvt-status-row">
+                                <span id="cvt_backend_status" class="cvt-badge" data-kind="idle">${t('status.checking')}</span>
+                            </div>
+                            <div class="cvt-toolbar" style="margin-top:10px;">
+                                <button id="cvt_refresh" type="button" class="menu_button">${t('common.refresh')}</button>
+                                <button id="cvt_snapshot_now" type="button" class="menu_button">${t('chat.toolbar.backupNow')}</button>
+                                <button id="cvt_open_recovery" type="button" class="menu_button">${t('chat.toolbar.recovery')}</button>
+                            </div>
+                            <div class="cvt-note">${t('chat.toolbarHint')}</div>
                         </div>
-                        <div class="cvt-note">${t('chat.toolbarHint')}</div>
                     </div>
 
                     <div id="cvt_draft_card" class="cvt-card cvt-card-soft" hidden>
-                        <div class="cvt-draft-title">${t('draft.detected')}</div>
-                        <div id="cvt_draft_meta" class="cvt-draft-meta"></div>
-                        <div id="cvt_draft_preview" class="cvt-draft-preview"></div>
-                        <div class="cvt-toolbar">
-                            <button id="cvt_restore_draft" type="button" class="menu_button">${t('draft.restore')}</button>
-                            <button id="cvt_clear_draft" type="button" class="menu_button">${t('draft.clear')}</button>
+                        <div class="cvt-section-head">
+                            <strong class="cvt-draft-title">${t('draft.detected')}</strong>
+                            <div class="cvt-section-head-actions">
+                                ${buildSectionToggle('chat_draft')}
+                            </div>
                         </div>
-                        <div class="cvt-note">${t('draft.note')}</div>
+                        <div class="${getCardBodyClass('chat_draft')}" data-cvt-section="chat_draft">
+                            <div id="cvt_draft_meta" class="cvt-draft-meta"></div>
+                            <div id="cvt_draft_preview" class="cvt-draft-preview"></div>
+                            <div class="cvt-toolbar">
+                                <button id="cvt_restore_draft" type="button" class="menu_button">${t('draft.restore')}</button>
+                                <button id="cvt_clear_draft" type="button" class="menu_button">${t('draft.clear')}</button>
+                            </div>
+                            <div class="cvt-note">${t('draft.note')}</div>
+                        </div>
                     </div>
 
                     <div class="cvt-card">
                         <div class="cvt-section-head">
                             <strong>${t('chat.section.backups')}</strong>
-                            <span class="cvt-hint">${t('chat.section.backupsHint')}</span>
+                            <div class="cvt-section-head-actions">
+                                <span class="cvt-hint">${t('chat.section.backupsHint')}</span>
+                                ${buildSectionToggle('chat_backups')}
+                            </div>
                         </div>
-                        <div id="cvt_checkpoint_list" class="cvt-list">
-                            <div class="cvt-empty">${t('common.loading')}</div>
+                        <div class="${getCardBodyClass('chat_backups', { scroll: true })}" data-cvt-section="chat_backups">
+                            <label class="cvt-field cvt-field-tight">
+                                <span>${t('chat.searchLabel')}</span>
+                                <input id="cvt_checkpoint_search" class="text_pole" type="text" placeholder="${t('chat.searchPlaceholder')}">
+                            </label>
+                            <div id="cvt_checkpoint_list" class="cvt-list">
+                                <div class="cvt-empty">${t('common.loading')}</div>
+                            </div>
+                            <div class="cvt-note">${t('chat.backupsNote')}</div>
                         </div>
-                        <div class="cvt-note">${t('chat.backupsNote')}</div>
                     </div>
                 </section>
 
@@ -149,38 +210,154 @@ function buildPanelHtml() {
                     <div class="cvt-card">
                         <div class="cvt-section-head">
                             <strong>${t('recovery.section.title')}</strong>
-                            <span id="cvt_recovery_summary" class="cvt-summary">${t('status.recoveryIdle')}</span>
+                            <div class="cvt-section-head-actions">
+                                <span id="cvt_recovery_summary" class="cvt-summary">${t('status.recoveryIdle')}</span>
+                                ${buildSectionToggle('recovery_overview')}
+                            </div>
                         </div>
-                        <div class="cvt-toolbar">
-                            <button id="cvt_scope_refresh" type="button" class="menu_button">${t('recovery.refreshList')}</button>
-                            <button id="cvt_back_to_chat" type="button" class="menu_button" hidden>${t('recovery.backToChat')}</button>
+                        <div class="${getCardBodyClass('recovery_overview')}" data-cvt-section="recovery_overview">
+                            <div class="cvt-toolbar">
+                                <button id="cvt_scope_refresh" type="button" class="menu_button">${t('recovery.refreshList')}</button>
+                                <button id="cvt_back_to_chat" type="button" class="menu_button" hidden>${t('recovery.backToChat')}</button>
+                            </div>
+                            <div class="cvt-field" style="margin-top:10px;">
+                                <span>${t('recovery.searchLabel')}</span>
+                                <input id="cvt_scope_search" class="text_pole" type="text" placeholder="${t('recovery.searchPlaceholder')}">
+                            </div>
+                            <div class="cvt-note cvt-note-strong">${t('recovery.useCase')}</div>
+                            <div class="cvt-note">${t('recovery.capability')}</div>
                         </div>
-                        <div class="cvt-field" style="margin-top:10px;">
-                            <span>${t('recovery.searchLabel')}</span>
-                            <input id="cvt_scope_search" class="text_pole" type="text" placeholder="${t('recovery.searchPlaceholder')}">
-                        </div>
-                        <div class="cvt-note cvt-note-strong">${t('recovery.useCase')}</div>
-                        <div class="cvt-note">${t('recovery.capability')}</div>
                     </div>
 
                     <div class="cvt-recovery-grid">
                         <div class="cvt-card">
                             <div class="cvt-section-head">
                                 <strong>${t('recovery.section.scope')}</strong>
-                                <span class="cvt-hint">${t('recovery.section.scopeHint')}</span>
+                                <div class="cvt-section-head-actions">
+                                    <span class="cvt-hint">${t('recovery.section.scopeHint')}</span>
+                                    ${buildSectionToggle('recovery_scope_list')}
+                                </div>
                             </div>
-                            <div id="cvt_scope_list" class="cvt-list">
-                                <div class="cvt-empty">${t('common.loading')}</div>
+                            <div class="${getCardBodyClass('recovery_scope_list', { scroll: true })}" data-cvt-section="recovery_scope_list">
+                                <div id="cvt_scope_list" class="cvt-list">
+                                    <div class="cvt-empty">${t('common.loading')}</div>
+                                </div>
                             </div>
                         </div>
 
                         <div class="cvt-card">
                             <div class="cvt-section-head">
                                 <strong>${t('recovery.section.selected')}</strong>
-                                <span class="cvt-hint">${t('recovery.section.selectedHint')}</span>
+                                <div class="cvt-section-head-actions">
+                                    <span class="cvt-hint">${t('recovery.section.selectedHint')}</span>
+                                    ${buildSectionToggle('recovery_backup_list')}
+                                </div>
                             </div>
-                            <div id="cvt_recovery_checkpoint_list" class="cvt-list">
-                                <div class="cvt-empty">${t('recovery.emptySelectFirst')}</div>
+                            <div class="${getCardBodyClass('recovery_backup_list', { scroll: true })}" data-cvt-section="recovery_backup_list">
+                                <label class="cvt-field cvt-field-tight">
+                                    <span>${t('recovery.backupSearchLabel')}</span>
+                                    <input id="cvt_recovery_checkpoint_search" class="text_pole" type="text" placeholder="${t('recovery.backupSearchPlaceholder')}">
+                                </label>
+                                <div id="cvt_recovery_checkpoint_list" class="cvt-list">
+                                    <div class="cvt-empty">${t('recovery.emptySelectFirst')}</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="cvt-page" data-cvt-page="cloud">
+                    <div class="cvt-card">
+                        <div class="cvt-section-head">
+                            <strong>${t('cloud.section.title')}</strong>
+                            <div class="cvt-section-head-actions">
+                                <span id="cvt_cloud_summary" class="cvt-summary">${t('cloud.status.idle')}</span>
+                                ${buildSectionToggle('cloud_overview')}
+                            </div>
+                        </div>
+                        <div class="${getCardBodyClass('cloud_overview', { scroll: true })}" data-cvt-section="cloud_overview">
+                            <div class="cvt-toolbar">
+                                <button id="cvt_cloud_save_config" type="button" class="menu_button">${t('cloud.actions.saveConfig')}</button>
+                                <button id="cvt_cloud_connect" type="button" class="menu_button">${t('cloud.actions.connect')}</button>
+                                <button id="cvt_cloud_sync" type="button" class="menu_button">${t('cloud.actions.syncNow')}</button>
+                                <button id="cvt_cloud_refresh" type="button" class="menu_button">${t('cloud.actions.refreshRemote')}</button>
+                            </div>
+                            <div class="cvt-grid-2" style="margin-top:10px;">
+                                <label class="cvt-field">
+                                    <span>${t('cloud.fields.repoUrl')}</span>
+                                    <input id="cvt_cloud_repo_url" class="text_pole" type="url" placeholder="https://github.com/owner/repo.git">
+                                    <small>${t('cloud.fields.repoUrlHint')}</small>
+                                </label>
+                                <label class="cvt-field">
+                                    <span>${t('cloud.fields.branch')}</span>
+                                    <input id="cvt_cloud_branch" class="text_pole" type="text" placeholder="main">
+                                    <small>${t('cloud.fields.branchHint')}</small>
+                                </label>
+                                <label class="cvt-field">
+                                    <span>${t('cloud.fields.token')}</span>
+                                    <input id="cvt_cloud_token" class="text_pole" type="password" placeholder="${t('cloud.fields.tokenPlaceholder')}">
+                                    <small id="cvt_cloud_token_hint">${t('cloud.fields.tokenHint')}</small>
+                                </label>
+                                <label class="cvt-field">
+                                    <span>${t('cloud.fields.deviceName')}</span>
+                                    <input id="cvt_cloud_device_name" class="text_pole" type="text" placeholder="${t('cloud.fields.deviceNamePlaceholder')}">
+                                    <small>${t('cloud.fields.deviceNameHint')}</small>
+                                </label>
+                            </div>
+                            <div class="cvt-cloud-checks">
+                                <label class="cvt-check-row">
+                                    <input type="checkbox" id="cvt_cloud_sync_pinned">
+                                    <span>${t('cloud.fields.syncPinned')}</span>
+                                </label>
+                                <label class="cvt-check-row">
+                                    <input type="checkbox" id="cvt_cloud_sync_latest">
+                                    <span>${t('cloud.fields.syncLatest')}</span>
+                                </label>
+                            </div>
+                            <div class="cvt-note cvt-note-strong">${t('cloud.useCase')}</div>
+                            <div class="cvt-note">${t('cloud.capability')}</div>
+                            <div class="cvt-note">${t('cloud.retentionExplain')}</div>
+                            <div class="cvt-note">${t('cloud.importExplain')}</div>
+                            <div class="cvt-note">${t('cloud.restoreExplain')}</div>
+                        </div>
+                    </div>
+
+                    <div class="cvt-cloud-grid">
+                        <div class="cvt-card">
+                            <div class="cvt-section-head">
+                                <strong>${t('cloud.section.scope')}</strong>
+                                <div class="cvt-section-head-actions">
+                                    <span class="cvt-hint">${t('cloud.section.scopeHint')}</span>
+                                    ${buildSectionToggle('cloud_scope_list')}
+                                </div>
+                            </div>
+                            <div class="${getCardBodyClass('cloud_scope_list', { scroll: true })}" data-cvt-section="cloud_scope_list">
+                                <label class="cvt-field cvt-field-tight">
+                                    <span>${t('cloud.scopeSearchLabel')}</span>
+                                    <input id="cvt_cloud_scope_search" class="text_pole" type="text" placeholder="${t('cloud.scopeSearchPlaceholder')}">
+                                </label>
+                                <div id="cvt_cloud_scope_list" class="cvt-list">
+                                    <div class="cvt-empty">${t('cloud.emptyNoConfig')}</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="cvt-card">
+                            <div class="cvt-section-head">
+                                <strong>${t('cloud.section.selected')}</strong>
+                                <div class="cvt-section-head-actions">
+                                    <span class="cvt-hint">${t('cloud.section.selectedHint')}</span>
+                                    ${buildSectionToggle('cloud_backup_list')}
+                                </div>
+                            </div>
+                            <div class="${getCardBodyClass('cloud_backup_list', { scroll: true })}" data-cvt-section="cloud_backup_list">
+                                <label class="cvt-field cvt-field-tight">
+                                    <span>${t('cloud.backupSearchLabel')}</span>
+                                    <input id="cvt_cloud_checkpoint_search" class="text_pole" type="text" placeholder="${t('cloud.backupSearchPlaceholder')}">
+                                </label>
+                                <div id="cvt_cloud_checkpoint_list" class="cvt-list">
+                                    <div class="cvt-empty">${t('cloud.emptySelectFirst')}</div>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -190,58 +367,79 @@ function buildPanelHtml() {
                     <div class="cvt-card">
                         <div class="cvt-section-head">
                             <strong>${t('settings.theme')}</strong>
-                            <span class="cvt-hint">${t('settings.themeHint')}</span>
+                            <div class="cvt-section-head-actions">
+                                <span class="cvt-hint">${t('settings.themeHint')}</span>
+                                ${buildSectionToggle('settings_theme')}
+                            </div>
                         </div>
-                        <div class="cvt-theme-grid">${buildThemeButtons()}</div>
-                        <div class="cvt-note">${t('settings.themeNote')}</div>
+                        <div class="${getCardBodyClass('settings_theme')}" data-cvt-section="settings_theme">
+                            <div class="cvt-theme-grid">${buildThemeButtons()}</div>
+                            <div class="cvt-note">${t('settings.themeNote')}</div>
+                        </div>
                     </div>
 
                     <div class="cvt-card">
-                        <label class="cvt-check-row">
-                            <input type="checkbox" id="cvt_enabled">
-                            <span>${t('settings.autoBackup')}</span>
-                        </label>
-                        <label class="cvt-check-row">
-                            <input type="checkbox" id="cvt_show_recovery_toast">
-                            <span>${t('settings.showRecoveryToast')}</span>
-                        </label>
-                        <div class="cvt-note">${t('settings.triggerNote')}</div>
-                        <div class="cvt-note">${t('settings.behaviorNote')}</div>
+                        <div class="cvt-section-head">
+                            <strong>${t('settings.behaviorTitle')}</strong>
+                            <div class="cvt-section-head-actions">
+                                ${buildSectionToggle('settings_behavior')}
+                            </div>
+                        </div>
+                        <div class="${getCardBodyClass('settings_behavior')}" data-cvt-section="settings_behavior">
+                            <label class="cvt-check-row">
+                                <input type="checkbox" id="cvt_enabled">
+                                <span>${t('settings.autoBackup')}</span>
+                            </label>
+                            <label class="cvt-check-row">
+                                <input type="checkbox" id="cvt_show_recovery_toast">
+                                <span>${t('settings.showRecoveryToast')}</span>
+                            </label>
+                            <div class="cvt-note">${t('settings.triggerNote')}</div>
+                            <div class="cvt-note">${t('settings.behaviorNote')}</div>
+                        </div>
                     </div>
 
                     <div class="cvt-card">
-                        <div class="cvt-grid-2">
-                            <label class="cvt-field">
-                                <span>${t('settings.autoBackupCount')}</span>
-                                <input id="cvt_auto_slots" class="text_pole" inputmode="numeric" type="number" min="1" max="100">
-                                <small>${t('settings.autoBackupCountHint')}</small>
-                            </label>
-
-                            <label class="cvt-field">
-                                <span>${t('settings.saveDelay')}</span>
-                                <input id="cvt_save_delay" class="text_pole" inputmode="numeric" type="number" min="50" max="3000">
-                                <small>${t('settings.saveDelayHint')}</small>
-                            </label>
-
-                            <label class="cvt-field">
-                                <span>${t('settings.draftDelay')}</span>
-                                <input id="cvt_draft_delay" class="text_pole" inputmode="numeric" type="number" min="50" max="3000">
-                                <small>${t('settings.draftDelayHint')}</small>
-                            </label>
-
-                            <label class="cvt-field">
-                                <span>${t('settings.restoreTemplate')}</span>
-                                <input id="cvt_restore_name_template" class="text_pole" type="text">
-                                <small>${t('settings.restoreTemplateHint')}</small>
-                            </label>
+                        <div class="cvt-section-head">
+                            <strong>${t('settings.advancedTitle')}</strong>
+                            <div class="cvt-section-head-actions">
+                                ${buildSectionToggle('settings_advanced')}
+                            </div>
                         </div>
+                        <div class="${getCardBodyClass('settings_advanced', { scroll: true })}" data-cvt-section="settings_advanced">
+                            <div class="cvt-grid-2">
+                                <label class="cvt-field">
+                                    <span>${t('settings.autoBackupCount')}</span>
+                                    <input id="cvt_auto_slots" class="text_pole" inputmode="numeric" type="number" min="1" max="100">
+                                    <small>${t('settings.autoBackupCountHint')}</small>
+                                </label>
 
-                        <label class="cvt-field" style="margin-top:10px;">
-                            <span>${t('settings.snapshotTemplate')}</span>
-                            <input id="cvt_snapshot_file_template" class="text_pole" type="text">
-                            <small>${t('settings.snapshotTemplateHint')}</small>
-                        </label>
-                        <div class="cvt-note">${t('settings.namingNote')}</div>
+                                <label class="cvt-field">
+                                    <span>${t('settings.saveDelay')}</span>
+                                    <input id="cvt_save_delay" class="text_pole" inputmode="numeric" type="number" min="50" max="3000">
+                                    <small>${t('settings.saveDelayHint')}</small>
+                                </label>
+
+                                <label class="cvt-field">
+                                    <span>${t('settings.draftDelay')}</span>
+                                    <input id="cvt_draft_delay" class="text_pole" inputmode="numeric" type="number" min="50" max="3000">
+                                    <small>${t('settings.draftDelayHint')}</small>
+                                </label>
+
+                                <label class="cvt-field">
+                                    <span>${t('settings.restoreTemplate')}</span>
+                                    <input id="cvt_restore_name_template" class="text_pole" type="text">
+                                    <small>${t('settings.restoreTemplateHint')}</small>
+                                </label>
+                            </div>
+
+                            <label class="cvt-field" style="margin-top:10px;">
+                                <span>${t('settings.snapshotTemplate')}</span>
+                                <input id="cvt_snapshot_file_template" class="text_pole" type="text">
+                                <small>${t('settings.snapshotTemplateHint')}</small>
+                            </label>
+                            <div class="cvt-note">${t('settings.namingNote')}</div>
+                        </div>
                     </div>
                 </section>
             </div>
@@ -275,6 +473,11 @@ function openPanel(tabName = 'chat') {
 
     if (tabName === 'recovery') {
         void refreshRecoveryScopes({ quiet: true });
+    } else if (tabName === 'cloud') {
+        void (async () => {
+            await refreshCloudStatus({ quiet: true });
+            await refreshCloudScopes({ quiet: true });
+        })();
     }
 }
 
@@ -542,6 +745,9 @@ function ensureSettings() {
         ...DEFAULT_SETTINGS,
         ...(stored && typeof stored === 'object' ? stored : {}),
         autoSlotCount,
+        collapsedSections: stored?.collapsedSections && typeof stored.collapsedSections === 'object'
+            ? stored.collapsedSections
+            : {},
     };
     return extension_settings[SETTINGS_KEY];
 }
@@ -705,6 +911,25 @@ function findCharacterIdBySource(source) {
         return character && String(character.name || '') === String(source.characterName || '');
     });
     return index;
+}
+
+function findGroupIdBySource(source) {
+    const context = getContext();
+    const groups = Array.isArray(context?.groups) ? context.groups : [];
+    if (!groups.length || source?.kind !== 'group') {
+        return '';
+    }
+
+    let match = groups.find((group) => {
+        return group && String(group.id || '') === String(source.groupId || '');
+    });
+    if (!match) {
+        match = groups.find((group) => {
+            return group && String(group.name || '') === String(source.groupName || '');
+        });
+    }
+
+    return match ? String(match.id || '') : '';
 }
 
 function stripJsonlExtension(value) {
@@ -896,7 +1121,7 @@ function renderDraftCard(draft) {
     card.hidden = false;
 }
 
-function buildCheckpointItem(entry, { allowOverwrite = true } = {}) {
+function buildCheckpointItem(entry, { allowOverwrite = true, actionList = null } = {}) {
     const item = document.createElement('div');
     item.className = 'cvt-item';
     item.dataset.snapshotId = entry.id;
@@ -922,6 +1147,40 @@ function buildCheckpointItem(entry, { allowOverwrite = true } = {}) {
         tags.appendChild(pinnedTag);
     }
 
+    const resourceSummary = entry.resourceSummary && typeof entry.resourceSummary === 'object' ? entry.resourceSummary : null;
+    if (resourceSummary?.characterCardCount > 0) {
+        const tag = document.createElement('span');
+        tag.className = 'cvt-tag cvt-tag-cloud-resource';
+        tag.textContent = t('cloud.tags.characterCards', { count: resourceSummary.characterCardCount });
+        tags.appendChild(tag);
+    }
+    if (resourceSummary?.personaAvatarCount > 0 || resourceSummary?.personaProfileCount > 0) {
+        const tag = document.createElement('span');
+        tag.className = 'cvt-tag cvt-tag-cloud-resource';
+        tag.textContent = t('cloud.tags.personas', { count: Math.max(resourceSummary.personaAvatarCount || 0, resourceSummary.personaProfileCount || 0) });
+        tags.appendChild(tag);
+    }
+    if (resourceSummary?.worldInfoCount > 0) {
+        const tag = document.createElement('span');
+        tag.className = 'cvt-tag cvt-tag-cloud-resource';
+        tag.textContent = t('cloud.tags.worlds', { count: resourceSummary.worldInfoCount });
+        tags.appendChild(tag);
+    }
+    if (resourceSummary?.groupDefinitionCount > 0) {
+        const tag = document.createElement('span');
+        tag.className = 'cvt-tag cvt-tag-cloud-resource';
+        tag.textContent = t('cloud.tags.groups', { count: resourceSummary.groupDefinitionCount });
+        tags.appendChild(tag);
+    }
+    if (Array.isArray(entry.sourceDeviceNames) && entry.sourceDeviceNames.length > 0) {
+        const tag = document.createElement('span');
+        tag.className = 'cvt-tag cvt-tag-cloud-device';
+        tag.textContent = t('cloud.tags.sourceDevice', {
+            names: entry.sourceDeviceNames.join(' / '),
+        });
+        tags.appendChild(tag);
+    }
+
     const meta = document.createElement('div');
     meta.className = 'cvt-item-meta';
     const metaParts = [];
@@ -932,6 +1191,9 @@ function buildCheckpointItem(entry, { allowOverwrite = true } = {}) {
         metaParts.push(entry.lastMessageName);
     }
     metaParts.push(t('labels.messageCount', { count: entry.messageCount }));
+    if (resourceSummary?.totalCount > 0) {
+        metaParts.push(t('cloud.labels.resourceCount', { count: resourceSummary.totalCount }));
+    }
     meta.textContent = metaParts.join(' · ');
 
     const preview = document.createElement('div');
@@ -941,7 +1203,7 @@ function buildCheckpointItem(entry, { allowOverwrite = true } = {}) {
     const actions = document.createElement('div');
     actions.className = 'cvt-item-actions';
 
-    const actionList = [
+    const defaultActionList = [
         { action: 'preview', text: t('common.preview') },
         { action: 'rename', text: t('common.rename') },
         { action: 'restore-new', text: t('actions.restoreNew') },
@@ -950,10 +1212,10 @@ function buildCheckpointItem(entry, { allowOverwrite = true } = {}) {
     ];
 
     if (allowOverwrite) {
-        actionList.splice(3, 0, { action: 'overwrite', text: t('actions.overwriteCurrent'), danger: true });
+        defaultActionList.splice(3, 0, { action: 'overwrite', text: t('actions.overwriteCurrent'), danger: true });
     }
 
-    for (const action of actionList) {
+    for (const action of (actionList || defaultActionList)) {
         const button = document.createElement('button');
         button.type = 'button';
         button.className = action.danger ? 'menu_button cvt-danger' : 'menu_button';
@@ -971,7 +1233,71 @@ function buildCheckpointItem(entry, { allowOverwrite = true } = {}) {
     return item;
 }
 
-function renderCheckpointListInto(containerId, entries, { allowOverwrite = true, emptyText = t('status.currentEmpty') } = {}) {
+function filterCheckpointEntries(entries, keyword = '') {
+    const normalizedKeyword = String(keyword || '').trim().toLowerCase();
+    if (!normalizedKeyword) {
+        return Array.isArray(entries) ? entries : [];
+    }
+
+    return (Array.isArray(entries) ? entries : []).filter((entry) => {
+        const haystack = [
+            entry?.customName,
+            entry?.lastMessagePreview,
+            entry?.lastMessageName,
+            entry?.trigger,
+            entry?.triggerLabel,
+            entry?.label,
+            entry?.source?.chatId,
+            entry?.source?.characterName,
+            entry?.source?.groupName,
+            ...(Array.isArray(entry?.sourceDeviceNames) ? entry.sourceDeviceNames : []),
+        ].join('\n').toLowerCase();
+        return haystack.includes(normalizedKeyword);
+    });
+}
+
+function setSectionCollapsed(sectionKey, collapsed) {
+    const settings = ensureSettings();
+    settings.collapsedSections = settings.collapsedSections && typeof settings.collapsedSections === 'object'
+        ? settings.collapsedSections
+        : {};
+    settings.collapsedSections[sectionKey] = Boolean(collapsed);
+    getContext()?.saveSettingsDebounced?.();
+
+    const body = document.querySelector(`.cvt-card-body[data-cvt-section="${sectionKey}"]`);
+    const toggle = document.querySelector(`.cvt-section-toggle[data-cvt-toggle-section="${sectionKey}"]`);
+    if (body) {
+        body.classList.toggle('is-collapsed', Boolean(collapsed));
+    }
+    if (toggle) {
+        const label = collapsed ? t('common.expand') : t('common.collapse');
+        toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+        toggle.setAttribute('aria-label', label);
+        toggle.setAttribute('title', label);
+        toggle.innerHTML = `<span class="cvt-section-toggle-icon" aria-hidden="true">${collapsed ? '&#9656;' : '&#9662;'}</span>`;
+    }
+}
+
+function setCloudToolbarBusyState(isBusy) {
+    cloudToolbarBusy = Boolean(isBusy);
+    const buttonIds = [
+        'cvt_cloud_save_config',
+        'cvt_cloud_connect',
+        'cvt_cloud_sync',
+        'cvt_cloud_refresh',
+    ];
+
+    for (const id of buttonIds) {
+        const button = document.getElementById(id);
+        if (!button) {
+            continue;
+        }
+        button.disabled = cloudToolbarBusy;
+        button.classList.toggle('cvt-button-busy', cloudToolbarBusy);
+    }
+}
+
+function renderCheckpointListInto(containerId, entries, { allowOverwrite = true, emptyText = t('status.currentEmpty'), actionList = null } = {}) {
     const container = document.getElementById(containerId);
     if (!container) {
         return;
@@ -987,21 +1313,23 @@ function renderCheckpointListInto(containerId, entries, { allowOverwrite = true,
     }
 
     for (const entry of entries) {
-        container.appendChild(buildCheckpointItem(entry, { allowOverwrite }));
+        container.appendChild(buildCheckpointItem(entry, { allowOverwrite, actionList }));
     }
 }
 
 function renderCurrentStatus(status) {
     const summary = document.getElementById('cvt_current_summary');
+    const searchKeyword = String(document.getElementById('cvt_checkpoint_search')?.value || '').trim();
+    const filteredEntries = filterCheckpointEntries(status?.entries || [], searchKeyword);
     if (summary) {
         if (status?.unavailable) {
             summary.textContent = t('status.currentUnavailable');
         } else if (!status?.source?.chatId) {
             summary.textContent = t('status.currentNoChat');
-        } else if (!status?.entries?.length) {
-            summary.textContent = t('status.currentEmpty');
+        } else if (!filteredEntries.length) {
+            summary.textContent = searchKeyword ? t('chat.searchEmpty') : t('status.currentEmpty');
         } else {
-            const latest = status.entries[0];
+            const latest = filteredEntries[0];
             summary.textContent = t('status.currentLatest', {
                 time: formatDateTime(latest.createdAt),
                 trigger: getTriggerDisplayLabel(latest.trigger || latest.triggerLabel),
@@ -1028,27 +1356,29 @@ function renderCurrentStatus(status) {
         return;
     }
 
-    renderCheckpointListInto('cvt_checkpoint_list', status?.entries || [], {
+    renderCheckpointListInto('cvt_checkpoint_list', filteredEntries, {
         allowOverwrite: true,
-        emptyText: t('status.currentEmpty'),
+        emptyText: searchKeyword ? t('chat.searchEmpty') : t('status.currentEmpty'),
     });
 }
 
 function renderRecoveryStatus(status) {
     const summary = document.getElementById('cvt_recovery_summary');
     const selectedSource = status?.source || activeScopeOverride;
+    const searchKeyword = String(document.getElementById('cvt_recovery_checkpoint_search')?.value || '').trim();
+    const filteredEntries = filterCheckpointEntries(status?.entries || [], searchKeyword);
 
     if (summary) {
         if (!activeScopeOverride) {
             summary.textContent = t('status.recoveryIdle');
         } else if (status?.unavailable) {
             summary.textContent = t('status.recoveryUnavailable');
-        } else if (!status?.entries?.length) {
+        } else if (!filteredEntries.length) {
             summary.textContent = t('status.recoveryEmpty', {
                 label: getScopeDisplayLabel(selectedSource),
             });
         } else {
-            const latest = status.entries[0];
+            const latest = filteredEntries[0];
             summary.textContent = t('status.recoveryLatest', {
                 label: getScopeDisplayLabel(selectedSource),
                 time: formatDateTime(latest.createdAt),
@@ -1074,9 +1404,9 @@ function renderRecoveryStatus(status) {
         return;
     }
 
-    renderCheckpointListInto('cvt_recovery_checkpoint_list', status?.entries || [], {
+    renderCheckpointListInto('cvt_recovery_checkpoint_list', filteredEntries, {
         allowOverwrite: false,
-        emptyText: t('status.recoveryEmpty', {
+        emptyText: searchKeyword ? t('recovery.backupSearchEmpty') : t('status.recoveryEmpty', {
             label: getScopeDisplayLabel(selectedSource),
         }),
     });
@@ -1210,6 +1540,490 @@ async function openRecoveryScope(scopeId) {
     setActivePanelTab('recovery');
     renderRecoveryScopeList();
     await refreshStatus({ quiet: true });
+}
+
+function getActiveCloudScope() {
+    return cloudManifestCache?.scopes?.find((scope) => String(scope.scopeId || '') === String(activeCloudScopeId || '')) || null;
+}
+
+function renderCloudStatus(config = null, manifest = null) {
+    const summary = document.getElementById('cvt_cloud_summary');
+    if (!summary) {
+        return;
+    }
+
+    if (!config?.repoUrl) {
+        summary.textContent = t('cloud.status.missingConfig');
+        return;
+    }
+
+    if (!config?.hasToken) {
+        summary.textContent = t('cloud.status.missingToken');
+        return;
+    }
+
+    const scopeCount = Number(manifest?.scopeCount || manifest?.scopes?.length || 0);
+    const snapshotCount = Number(manifest?.snapshotCount || 0);
+    const updatedAt = Number(manifest?.updatedAt || 0);
+
+    if (!scopeCount) {
+        summary.textContent = t('cloud.status.emptyRemote');
+        return;
+    }
+
+    summary.textContent = t('cloud.status.ready', {
+        scopes: scopeCount,
+        snapshots: snapshotCount,
+        time: updatedAt ? formatDateTime(updatedAt) : t('common.unknownTime'),
+    });
+}
+
+function applyCloudConfigToDom(config = null) {
+    const repoUrlInput = document.getElementById('cvt_cloud_repo_url');
+    const branchInput = document.getElementById('cvt_cloud_branch');
+    const tokenInput = document.getElementById('cvt_cloud_token');
+    const tokenHint = document.getElementById('cvt_cloud_token_hint');
+    const deviceNameInput = document.getElementById('cvt_cloud_device_name');
+    const syncPinnedInput = document.getElementById('cvt_cloud_sync_pinned');
+    const syncLatestInput = document.getElementById('cvt_cloud_sync_latest');
+
+    if (repoUrlInput) repoUrlInput.value = String(config?.repoUrl || '');
+    if (branchInput) branchInput.value = String(config?.branch || 'main');
+    if (deviceNameInput) deviceNameInput.value = String(config?.deviceName || '');
+    if (syncPinnedInput) syncPinnedInput.checked = config?.syncPinned !== false;
+    if (syncLatestInput) syncLatestInput.checked = config?.syncLatestStable !== false;
+    if (tokenInput) {
+        tokenInput.value = '';
+        tokenInput.placeholder = config?.hasToken ? t('cloud.fields.tokenSaved') : t('cloud.fields.tokenPlaceholder');
+    }
+    if (tokenHint) {
+        tokenHint.textContent = config?.hasToken ? t('cloud.fields.tokenHintSaved') : t('cloud.fields.tokenHint');
+    }
+}
+
+function buildCloudScopeItem(scope) {
+    const item = document.createElement('div');
+    item.className = `cvt-scope-item${String(activeCloudScopeId || '') === String(scope.scopeId || '') ? ' is-active' : ''}`;
+    item.dataset.scopeId = scope.scopeId;
+
+    const title = document.createElement('div');
+    title.className = 'cvt-scope-title';
+    title.textContent = scope.label || getScopeDisplayLabel(scope.source);
+
+    const meta = document.createElement('div');
+    meta.className = 'cvt-scope-meta';
+    meta.textContent = [
+        t('labels.chatBackupCount', { count: scope.entryCount || 0 }),
+        t('cloud.labels.deviceCount', { count: scope.deviceCount || 0 }),
+        scope.updatedAt ? t('labels.recentAt', { time: formatDateTime(scope.updatedAt) }) : '',
+    ].filter(Boolean).join(' · ');
+
+    const preview = document.createElement('div');
+    preview.className = 'cvt-scope-preview';
+    preview.textContent = scope.latestEntry?.lastMessagePreview || t('chat.emptyNoPreview');
+
+    const actions = document.createElement('div');
+    actions.className = 'cvt-item-actions';
+
+    const openButton = document.createElement('button');
+    openButton.type = 'button';
+    openButton.className = 'menu_button';
+    openButton.dataset.action = 'open-cloud-scope';
+    openButton.dataset.scopeId = scope.scopeId;
+    openButton.textContent = t('cloud.actions.openScope');
+    actions.appendChild(openButton);
+
+    item.appendChild(title);
+    item.appendChild(meta);
+    item.appendChild(preview);
+    item.appendChild(actions);
+    return item;
+}
+
+function renderCloudScopeList() {
+    const container = document.getElementById('cvt_cloud_scope_list');
+    if (!container) {
+        return;
+    }
+
+    const keyword = String(document.getElementById('cvt_cloud_scope_search')?.value || '').trim().toLowerCase();
+    const scopes = (Array.isArray(cloudManifestCache?.scopes) ? cloudManifestCache.scopes : []).filter((scope) => {
+        if (!keyword) {
+            return true;
+        }
+
+        const haystack = [
+            scope?.label,
+            scope?.source?.chatId,
+            scope?.source?.characterName,
+            scope?.source?.groupName,
+            ...(Array.isArray(scope?.devices) ? scope.devices.map((device) => device?.deviceName || device?.deviceId || '') : []),
+        ].join('\n').toLowerCase();
+        return haystack.includes(keyword);
+    });
+    container.innerHTML = '';
+    if (!scopes.length) {
+        const empty = document.createElement('div');
+        empty.className = 'cvt-empty';
+        empty.textContent = keyword ? t('cloud.scopeSearchEmpty') : t('cloud.emptyNoData');
+        container.appendChild(empty);
+        return;
+    }
+
+    for (const scope of scopes) {
+        container.appendChild(buildCloudScopeItem(scope));
+    }
+}
+
+function renderCloudCheckpointList() {
+    const activeScope = getActiveCloudScope();
+    const entries = Array.isArray(activeScope?.entries) ? activeScope.entries : [];
+    const keyword = String(document.getElementById('cvt_cloud_checkpoint_search')?.value || '').trim();
+    const deviceNameMap = new Map(
+        (Array.isArray(activeScope?.devices) ? activeScope.devices : []).map((device) => [
+            String(device?.deviceId || ''),
+            String(device?.deviceName || device?.deviceId || ''),
+        ]),
+    );
+    const normalizedEntries = entries.map((entry) => ({
+        ...entry,
+        id: entry.snapshotId,
+        sourceDeviceNames: (Array.isArray(entry?.publishedByDevices) ? entry.publishedByDevices : [])
+            .map((deviceId) => deviceNameMap.get(String(deviceId || '')) || String(deviceId || ''))
+            .filter(Boolean),
+    }));
+    renderCheckpointListInto('cvt_cloud_checkpoint_list', filterCheckpointEntries(normalizedEntries, keyword), {
+        allowOverwrite: false,
+        emptyText: activeScope
+            ? (keyword ? t('cloud.backupSearchEmpty') : t('cloud.emptyNoBackups'))
+            : t('cloud.emptySelectFirst'),
+        actionList: [
+            { action: 'cloud-preview', text: t('common.preview') },
+            { action: 'cloud-import', text: t('cloud.actions.importLocal') },
+            { action: 'cloud-restore-new', text: t('actions.restoreNew') },
+            { action: 'cloud-delete', text: t('common.delete'), danger: true },
+        ],
+    });
+}
+
+function applyImportedExtraWorldBindings(bindings = []) {
+    if (!Array.isArray(bindings) || bindings.length === 0) {
+        return false;
+    }
+
+    if (!Array.isArray(world_info.charLore)) {
+        world_info.charLore = [];
+    }
+
+    let changed = false;
+    for (const binding of bindings) {
+        const avatarUrl = String(binding?.avatarUrl || '').trim();
+        const worldNames = Array.from(new Set(
+            (Array.isArray(binding?.worldNames) ? binding.worldNames : [])
+                .map((item) => String(item || '').trim())
+                .filter(Boolean),
+        ));
+        const avatarBase = avatarUrl.replace(/\.[^/.]+$/, '');
+        if (!avatarBase || !worldNames.length) {
+            continue;
+        }
+
+        const existing = world_info.charLore.find((entry) => String(entry?.name || '').trim() === avatarBase);
+        if (!existing) {
+            world_info.charLore.push({
+                name: avatarBase,
+                extraBooks: worldNames,
+            });
+            changed = true;
+            continue;
+        }
+
+        const nextBooks = Array.from(new Set(
+            (Array.isArray(existing.extraBooks) ? existing.extraBooks : [])
+                .map((item) => String(item || '').trim())
+                .filter(Boolean)
+                .concat(worldNames),
+        ));
+        if (JSON.stringify(nextBooks) !== JSON.stringify(existing.extraBooks || [])) {
+            existing.extraBooks = nextBooks;
+            changed = true;
+        }
+    }
+
+    return changed;
+}
+
+function applyImportedPersonas(personas = []) {
+    if (!Array.isArray(personas) || personas.length === 0) {
+        return false;
+    }
+
+    if (!power_user.personas || typeof power_user.personas !== 'object') {
+        power_user.personas = {};
+    }
+    if (!power_user.persona_descriptions || typeof power_user.persona_descriptions !== 'object') {
+        power_user.persona_descriptions = {};
+    }
+
+    let changed = false;
+    for (const persona of personas) {
+        const avatarId = String(persona?.avatarId || '').trim();
+        if (!avatarId) {
+            continue;
+        }
+
+        const personaName = String(persona?.personaName || '').trim() || avatarId;
+        const descriptor = persona?.descriptor && typeof persona.descriptor === 'object'
+            ? persona.descriptor
+            : { description: '', position: 0, depth: 2, role: 0, lorebook: '', connections: [] };
+
+        if (power_user.personas[avatarId] !== personaName) {
+            power_user.personas[avatarId] = personaName;
+            changed = true;
+        }
+
+        const previousDescriptor = power_user.persona_descriptions[avatarId] || {};
+        if (JSON.stringify(previousDescriptor) !== JSON.stringify(descriptor)) {
+            power_user.persona_descriptions[avatarId] = descriptor;
+            changed = true;
+        }
+    }
+
+    return changed;
+}
+
+async function refreshImportedCloudResources(resourceImport = null) {
+    const context = getContext();
+    if (!context || !resourceImport || typeof resourceImport !== 'object') {
+        return;
+    }
+
+    if (
+        Number(resourceImport.importedWorldCount || 0) > 0
+        || (Array.isArray(resourceImport.worldMappings) && resourceImport.worldMappings.length > 0)
+    ) {
+        await context.updateWorldInfoList?.();
+    }
+
+    if (applyImportedExtraWorldBindings(resourceImport.extraWorldBindings || [])) {
+        context.saveSettingsDebounced?.();
+    }
+
+    const personaChanged = applyImportedPersonas(resourceImport.personas || []);
+    if (personaChanged) {
+        context.saveSettingsDebounced?.();
+        await getUserAvatars(true);
+    }
+
+    if (
+        Number(resourceImport.importedCharacterCount || 0) > 0
+        || Number(resourceImport.importedGroupCount || 0) > 0
+        || (Array.isArray(resourceImport.characterMappings) && resourceImport.characterMappings.length > 0)
+        || (Array.isArray(resourceImport.groupMappings) && resourceImport.groupMappings.length > 0)
+    ) {
+        await context.getCharacters?.();
+    }
+}
+
+async function refreshCloudStatus({ quiet = false } = {}) {
+    if (!backendReady) {
+        return;
+    }
+
+    try {
+        const result = await callApi('/cloud/status', {});
+        cloudConfigCache = result.config || {};
+        cloudManifestCache = result.manifest || buildEmptyCloudManifest();
+        applyCloudConfigToDom(cloudConfigCache);
+        renderCloudStatus(cloudConfigCache, result.manifest || buildEmptyCloudManifest());
+        renderCloudScopeList();
+        renderCloudCheckpointList();
+    } catch (error) {
+        if (!quiet) {
+            toastr.error(t('cloud.toasts.statusFailed'), getAppTitle());
+        }
+        console.error('[chat-vault] Failed to refresh cloud status:', error);
+    }
+}
+
+async function refreshCloudScopes({ quiet = false } = {}) {
+    if (!backendReady) {
+        return;
+    }
+
+    if (!cloudConfigCache?.repoUrl || !cloudConfigCache?.hasToken) {
+        renderCloudStatus(cloudConfigCache || {}, cloudManifestCache || buildEmptyCloudManifest());
+        const container = document.getElementById('cvt_cloud_scope_list');
+        if (container) {
+            container.innerHTML = `<div class="cvt-empty">${t('cloud.emptyNoConfig')}</div>`;
+        }
+        renderCloudCheckpointList();
+        return;
+    }
+
+    try {
+        const result = await callApi('/cloud/list', {});
+        cloudConfigCache = result.config || cloudConfigCache || {};
+        cloudManifestCache = result.manifest || buildEmptyCloudManifest();
+        applyCloudConfigToDom(cloudConfigCache);
+        if (activeCloudScopeId && !getActiveCloudScope()) {
+            activeCloudScopeId = '';
+        }
+        renderCloudStatus(cloudConfigCache, result.manifest || buildEmptyCloudManifest());
+        renderCloudScopeList();
+        renderCloudCheckpointList();
+    } catch (error) {
+        if (!quiet) {
+            toastr.error(t('cloud.toasts.listFailed'), getAppTitle());
+        }
+        console.error('[chat-vault] Failed to refresh cloud scopes:', error);
+        const container = document.getElementById('cvt_cloud_scope_list');
+        if (container) {
+            container.innerHTML = `<div class="cvt-empty">${t('cloud.emptyLoadFailed')}</div>`;
+        }
+    }
+}
+
+function openCloudScope(scopeId) {
+    activeCloudScopeId = scopeId;
+    renderCloudScopeList();
+    renderCloudCheckpointList();
+}
+
+function getCloudConfigFromDom() {
+    return {
+        repoUrl: String(document.getElementById('cvt_cloud_repo_url')?.value || '').trim(),
+        branch: String(document.getElementById('cvt_cloud_branch')?.value || '').trim() || 'main',
+        githubToken: String(document.getElementById('cvt_cloud_token')?.value || '').trim(),
+        deviceName: String(document.getElementById('cvt_cloud_device_name')?.value || '').trim(),
+        syncPinned: Boolean(document.getElementById('cvt_cloud_sync_pinned')?.checked),
+        syncLatestStable: Boolean(document.getElementById('cvt_cloud_sync_latest')?.checked),
+    };
+}
+
+async function saveCloudConfigFromDom({ quiet = false } = {}) {
+    const result = await callApi('/cloud/config/save', getCloudConfigFromDom());
+    cloudConfigCache = result.config || {};
+    applyCloudConfigToDom(cloudConfigCache);
+    renderCloudStatus(cloudConfigCache, cloudManifestCache || buildEmptyCloudManifest());
+    if (!quiet) {
+        toastr.success(t('cloud.toasts.configSaved'), getAppTitle());
+    }
+    return result;
+}
+
+async function connectCloudPanel() {
+    const saved = await saveCloudConfigFromDom({ quiet: true });
+    const result = await callApi('/cloud/connect', {});
+    cloudConfigCache = result.config || saved.config || {};
+    cloudManifestCache = result.manifest || buildEmptyCloudManifest();
+    applyCloudConfigToDom(cloudConfigCache);
+    renderCloudStatus(cloudConfigCache, cloudManifestCache);
+    renderCloudScopeList();
+    renderCloudCheckpointList();
+    toastr.success(t('cloud.toasts.connected'), getAppTitle());
+}
+
+async function syncCloudNow() {
+    setCloudToolbarBusyState(true);
+    try {
+        await saveCloudConfigFromDom({ quiet: true });
+        const result = await callApi('/cloud/sync/push', {});
+        cloudConfigCache = result.config || cloudConfigCache || {};
+        cloudManifestCache = result.manifest || buildEmptyCloudManifest();
+        applyCloudConfigToDom(cloudConfigCache);
+        renderCloudStatus(cloudConfigCache, cloudManifestCache);
+        renderCloudScopeList();
+        renderCloudCheckpointList();
+        toastr.success(t('cloud.toasts.synced', {
+            scopes: result.scopeCount || 0,
+            snapshots: result.snapshotCount || 0,
+            resources: result.resourceCount || 0,
+        }), getAppTitle());
+    } finally {
+        setCloudToolbarBusyState(false);
+    }
+}
+
+async function fetchCloudSnapshot(scopeId, snapshotId) {
+    return callApi('/cloud/snapshot/get', {
+        scopeId,
+        snapshotId,
+    });
+}
+
+async function previewCloudSnapshot(scopeId, snapshotId) {
+    const result = await fetchCloudSnapshot(scopeId, snapshotId);
+    const messages = (Array.isArray(result.messages) ? result.messages : []).slice(-Math.max(1, Number(getSettings().previewMessages || 12)));
+    const previewMessages = messages.map((message) => ({
+        name: message?.name || '',
+        sendDate: message?.send_date || '',
+        text: message?.mes || '',
+    }));
+    await showPreviewPopup(previewMessages);
+}
+
+async function restoreCloudSnapshotAsNew(scopeId, snapshotId) {
+    toastr.info(t('cloud.toasts.restoreStarting'), getAppTitle(), { timeOut: 1200 });
+    const result = await callApi('/cloud/snapshot/prepare-restore', {
+        scopeId,
+        snapshotId,
+    });
+    await refreshImportedCloudResources(result.resourceImport || null);
+    await restoreMessagesAsNew(
+        result.source || result.meta?.source || result.scope?.source || null,
+        {
+            ...(result.entry || {}),
+            id: snapshotId,
+        },
+        result.header || {},
+        Array.isArray(result.messages) ? result.messages : [],
+    );
+}
+
+async function importCloudSnapshot(scopeId, snapshotId) {
+    toastr.info(t('cloud.toasts.importStarting'), getAppTitle(), { timeOut: 1200 });
+    const result = await callApi('/cloud/snapshot/import', {
+        scopeId,
+        snapshotId,
+    });
+    await refreshImportedCloudResources(result.resourceImport || null);
+    await refreshStatus({ quiet: true });
+    toastr.success(
+        result.created ? t('cloud.toasts.imported') : t('cloud.toasts.importSkipped'),
+        getAppTitle(),
+    );
+}
+
+async function deleteCloudSnapshot(scopeId, snapshotId) {
+    const confirm = await Popup.show.confirm(
+        t('cloud.deleteConfirmTitle'),
+        t('cloud.deleteConfirmBody'),
+    );
+    if (!confirm) {
+        return;
+    }
+
+    toastr.info(t('cloud.toasts.deleteStarting'), getAppTitle(), { timeOut: 1200 });
+    setCloudToolbarBusyState(true);
+    try {
+        const result = await callApi('/cloud/snapshot/delete', {
+            scopeId,
+            snapshotId,
+        });
+        cloudConfigCache = result.config || cloudConfigCache || {};
+        cloudManifestCache = result.manifest || buildEmptyCloudManifest();
+        applyCloudConfigToDom(cloudConfigCache);
+        if (activeCloudScopeId && !getActiveCloudScope()) {
+            activeCloudScopeId = '';
+        }
+        renderCloudStatus(cloudConfigCache, cloudManifestCache);
+        renderCloudScopeList();
+        renderCloudCheckpointList();
+        toastr.success(t('cloud.toasts.deleted'), getAppTitle());
+    } finally {
+        setCloudToolbarBusyState(false);
+    }
 }
 
 function applySettingsToDom() {
@@ -1582,6 +2396,27 @@ async function fetchSnapshot(snapshotId) {
     });
 }
 
+function buildPreviewText(messages = []) {
+    return messages
+        .map((message) => {
+            const stamp = message.sendDate ? ` [${message.sendDate}]` : '';
+            return `${message.name || t('common.unknownSpeaker')}${stamp}\n${message.text || ''}`;
+        })
+        .join('\n\n');
+}
+
+async function showPreviewPopup(messages = []) {
+    const textArea = document.createElement('textarea');
+    textArea.className = 'text_pole monospace textarea_compact margin0 height100p';
+    textArea.readOnly = true;
+    textArea.value = buildPreviewText(messages);
+    await callGenericPopup(textArea, POPUP_TYPE.TEXT, '', {
+        allowVerticalScrolling: true,
+        large: true,
+        wide: true,
+    });
+}
+
 async function previewSnapshot(snapshotId) {
     const source = getActionSource();
     if (!source) {
@@ -1593,35 +2428,88 @@ async function previewSnapshot(snapshotId) {
         snapshotId,
         limit: getSettings().previewMessages,
     });
-
-    const textArea = document.createElement('textarea');
-    textArea.className = 'text_pole monospace textarea_compact margin0 height100p';
-    textArea.readOnly = true;
-    textArea.value = (result.previewMessages || [])
-        .map((message) => {
-            const stamp = message.sendDate ? ` [${message.sendDate}]` : '';
-            return `${message.name || t('common.unknownSpeaker')}${stamp}\n${message.text || ''}`;
-        })
-        .join('\n\n');
-
-    await callGenericPopup(textArea, POPUP_TYPE.TEXT, '', {
-        allowVerticalScrolling: true,
-        large: true,
-        wide: true,
-    });
+    await showPreviewPopup(result.previewMessages || []);
 }
 
-async function restoreSnapshotAsNew(snapshotId) {
+async function saveCharacterChatSnapshot(context, targetCharacterId, chatName, header, messages) {
+    const character = Array.isArray(context.characters) ? context.characters[targetCharacterId] : null;
+    if (!character?.avatar || !character?.name) {
+        throw new Error('target_character_not_found');
+    }
+
+    const payload = [
+        {
+            user_name: header?.user_name || context.name1 || '',
+            character_name: header?.character_name || character.name || '',
+            create_date: header?.create_date || header?.send_date || new Date().toISOString(),
+            chat_metadata: cloneJson(header?.chat_metadata, {}),
+        },
+        ...cloneJson(messages, []),
+    ];
+
+    const response = await fetch('/api/chats/save', {
+        method: 'POST',
+        headers: context.getRequestHeaders?.() || {},
+        body: JSON.stringify({
+            ch_name: character.name,
+            file_name: chatName,
+            chat: payload,
+            avatar_url: character.avatar,
+            force: false,
+        }),
+    });
+
+    if (!response.ok) {
+        throw new Error(`failed_to_save_character_chat:${response.status}`);
+    }
+}
+
+async function saveGroupChatSnapshot(context, targetGroupId, chatName, header, messages) {
+    const group = Array.isArray(context.groups)
+        ? context.groups.find((item) => String(item?.id || '') === String(targetGroupId || ''))
+        : null;
+    if (!group) {
+        throw new Error('target_group_not_found');
+    }
+
+    if (!Array.isArray(group.chats)) {
+        group.chats = [];
+    }
+    if (!group.chats.includes(chatName)) {
+        group.chats.push(chatName);
+    }
+    if (!group.past_metadata || typeof group.past_metadata !== 'object') {
+        group.past_metadata = {};
+    }
+    group.past_metadata[chatName] = cloneJson(header?.chat_metadata, {});
+
+    const saveGroupResponse = await fetch('/api/groups/edit', {
+        method: 'POST',
+        headers: context.getRequestHeaders?.() || {},
+        body: JSON.stringify(group),
+    });
+    if (!saveGroupResponse.ok) {
+        throw new Error(`failed_to_save_group_meta:${saveGroupResponse.status}`);
+    }
+
+    const saveChatResponse = await fetch('/api/chats/group/save', {
+        method: 'POST',
+        headers: context.getRequestHeaders?.() || {},
+        body: JSON.stringify({
+            id: chatName,
+            chat: cloneJson(messages, []),
+        }),
+    });
+    if (!saveChatResponse.ok) {
+        throw new Error(`failed_to_save_group_chat:${saveChatResponse.status}`);
+    }
+}
+
+async function restoreMessagesAsNew(source, entry, header, messages) {
     const context = getContext();
-    const source = getActionSource();
     if (!context || !source) {
         return;
     }
-
-    const result = await fetchSnapshot(snapshotId);
-    const entry = result.entry || {};
-    const header = result.header || {};
-    const messages = Array.isArray(result.messages) ? result.messages : [];
     const suggestedName = buildRestoreName(entry, source);
     const requestedName = await Popup.show.input(
         t('popup.restoreNew.title'),
@@ -1635,26 +2523,37 @@ async function restoreSnapshotAsNew(snapshotId) {
     const chatName = sanitizeNamePart(requestedName) || suggestedName;
 
     if (source.kind === 'group') {
-        await saveGroupBookmarkChat(source.groupId, chatName, cloneJson(header.chat_metadata, {}), undefined, messages);
-        await context.openGroupChat(source.groupId, chatName);
+        const targetGroupId = findGroupIdBySource(source);
+        if (!targetGroupId) {
+            toastr.error(t('toasts.missingGroup'), getAppTitle());
+            return;
+        }
+        await saveGroupChatSnapshot(context, targetGroupId, chatName, header, messages);
+        await context.openGroupChat(targetGroupId, chatName);
     } else {
         const targetCharacterId = findCharacterIdBySource(source);
         if (targetCharacterId < 0) {
             toastr.error(t('toasts.missingCharacter'), getAppTitle());
             return;
         }
+        await saveCharacterChatSnapshot(context, targetCharacterId, chatName, header, messages);
         if (String(context.characterId ?? '') !== String(targetCharacterId)) {
             await context.selectCharacterById(targetCharacterId, { switchMenu: false });
         }
-        await saveChat({
-            chatName,
-            withMetadata: cloneJson(header.chat_metadata, {}),
-            chatData: messages,
-        });
         await context.openCharacterChat(chatName);
     }
 
     toastr.success(t('toasts.restoredNewChat'), getAppTitle());
+}
+
+async function restoreSnapshotAsNew(snapshotId) {
+    const result = await fetchSnapshot(snapshotId);
+    await restoreMessagesAsNew(
+        getActionSource(),
+        result.entry || {},
+        result.header || {},
+        Array.isArray(result.messages) ? result.messages : [],
+    );
 }
 
 async function overwriteCurrentChat(snapshotId) {
@@ -1949,6 +2848,12 @@ function attachDomListeners() {
 
         if (tabName === 'recovery') {
             await refreshRecoveryScopes({ quiet: true });
+            return;
+        }
+
+        if (tabName === 'cloud') {
+            await refreshCloudStatus({ quiet: true });
+            await refreshCloudScopes({ quiet: true });
         }
     });
 
@@ -1989,8 +2894,81 @@ function attachDomListeners() {
         await refreshRecoveryScopes();
     });
 
+    $(document).on('click', '#cvt_cloud_save_config', async () => {
+        try {
+            toastr.info(t('cloud.toasts.configSaveStarting'), getAppTitle(), { timeOut: 1000 });
+            setCloudToolbarBusyState(true);
+            await saveCloudConfigFromDom();
+        } catch (error) {
+            console.error('[chat-vault] Failed to save cloud config:', error);
+            toastr.error(t('cloud.toasts.configSaveFailed'), getAppTitle());
+        } finally {
+            setCloudToolbarBusyState(false);
+        }
+    });
+
+    $(document).on('click', '#cvt_cloud_connect', async () => {
+        try {
+            toastr.info(t('cloud.toasts.connectStarting'), getAppTitle(), { timeOut: 1200 });
+            setCloudToolbarBusyState(true);
+            await connectCloudPanel();
+        } catch (error) {
+            console.error('[chat-vault] Failed to connect cloud panel:', error);
+            toastr.error(t('cloud.toasts.connectFailed'), getAppTitle());
+        } finally {
+            setCloudToolbarBusyState(false);
+        }
+    });
+
+    $(document).on('click', '#cvt_cloud_sync', async () => {
+        try {
+            toastr.info(t('cloud.toasts.syncStarting'), getAppTitle(), { timeOut: 1400 });
+            await syncCloudNow();
+        } catch (error) {
+            console.error('[chat-vault] Failed to sync cloud:', error);
+            toastr.error(t('cloud.toasts.syncFailed'), getAppTitle());
+        }
+    });
+
+    $(document).on('click', '#cvt_cloud_refresh', async () => {
+        try {
+            toastr.info(t('cloud.toasts.refreshStarting'), getAppTitle(), { timeOut: 1000 });
+            setCloudToolbarBusyState(true);
+            await refreshCloudScopes();
+        } catch (error) {
+            console.error('[chat-vault] Failed to refresh cloud list:', error);
+            toastr.error(t('cloud.toasts.listFailed'), getAppTitle());
+        } finally {
+            setCloudToolbarBusyState(false);
+        }
+    });
+
     $(document).on('input', '#cvt_scope_search', () => {
         renderRecoveryScopeList();
+    });
+
+    $(document).on('input', '#cvt_checkpoint_search', () => {
+        renderCurrentStatus(statusCache || null);
+    });
+
+    $(document).on('input', '#cvt_recovery_checkpoint_search', () => {
+        renderRecoveryStatus(activeScopeOverride ? statusCache : null);
+    });
+
+    $(document).on('input', '#cvt_cloud_scope_search', () => {
+        renderCloudScopeList();
+    });
+
+    $(document).on('input', '#cvt_cloud_checkpoint_search', () => {
+        renderCloudCheckpointList();
+    });
+
+    $(document).on('click', '.cvt-section-toggle', function () {
+        const sectionKey = this.dataset.cvtToggleSection;
+        if (!sectionKey) {
+            return;
+        }
+        setSectionCollapsed(sectionKey, !isSectionCollapsed(sectionKey));
     });
 
     $(document).on('click', '#cvt_back_to_chat', async () => {
@@ -2067,6 +3045,48 @@ function attachDomListeners() {
             toastr.error(t('recovery.openFailed'), getAppTitle());
         }
     });
+
+    $(document).on('click', '#cvt_cloud_scope_list [data-action="open-cloud-scope"]', function () {
+        const scopeId = this.dataset.scopeId;
+        if (!scopeId) {
+            return;
+        }
+        openCloudScope(scopeId);
+    });
+
+    $(document).on('click', '#cvt_cloud_checkpoint_list [data-action]', async function () {
+        const action = this.dataset.action;
+        const snapshotId = this.dataset.snapshotId;
+        const scopeId = activeCloudScopeId;
+        if (!scopeId || !snapshotId) {
+            return;
+        }
+
+        try {
+            if (action === 'cloud-preview') {
+                await previewCloudSnapshot(scopeId, snapshotId);
+                return;
+            }
+
+            if (action === 'cloud-import') {
+                await importCloudSnapshot(scopeId, snapshotId);
+                return;
+            }
+
+            if (action === 'cloud-restore-new') {
+                await restoreCloudSnapshotAsNew(scopeId, snapshotId);
+                return;
+            }
+
+            if (action === 'cloud-delete') {
+                await deleteCloudSnapshot(scopeId, snapshotId);
+                return;
+            }
+        } catch (error) {
+            console.error('[chat-vault] Cloud action failed:', action, error);
+            toastr.error(t('common.operationFailed'), getAppTitle());
+        }
+    });
 }
 
 function attachChatListeners() {
@@ -2128,4 +3148,5 @@ jQuery(async () => {
     attachChatListeners();
     await probeBackend();
     await refreshStatus({ quiet: true });
+    await refreshCloudStatus({ quiet: true });
 });

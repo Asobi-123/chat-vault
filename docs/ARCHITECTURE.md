@@ -6,6 +6,7 @@ Chat Vault is a hybrid SillyTavern extension:
 
 - the front-end extension watches chat events, editors, and UI actions
 - the server plugin persists backups and drafts under the user data directory
+- an optional Git cloud vault publishes selected backups into a separate repository workspace
 
 The goal is to keep backup and recovery logic independent from the current chat file's survival.
 
@@ -46,6 +47,31 @@ The goal is to keep backup and recovery logic independent from the current chat 
 2. When a rename succeeds, it calls `/api/plugins/chat-vault/scope/rebind-chat`.
 3. The server plugin updates alias bindings so old and new chat ids still resolve to the same scope.
 
+### 5. Git cloud vault
+
+1. The front-end opens the cloud tab and saves repository config into the server-side user directory.
+2. A manual sync asks the server plugin to scan local Chat Vault data.
+3. The server plugin selects:
+   - all long-term keep backups
+   - one stable backup per scope
+4. For each selected snapshot, the server plugin also collects linked resources such as character cards, persona data, lorebooks, and group definitions.
+5. Those snapshots and resources are written into a dedicated Git workspace, not into the live SillyTavern `data` tree.
+6. The remote `manifest.json` is rebuilt from the cloud snapshot metadata already stored in that workspace.
+7. Another device can fetch that manifest, browse the remote scopes, import resources plus the snapshot into local Chat Vault, or restore it as a new chat.
+
+### 6. Cloud restore and local import
+
+1. The front-end asks the server plugin to prepare a remote snapshot.
+2. The server plugin imports missing resources into normal SillyTavern user directories:
+   - `characters/`
+   - `User Avatars/`
+   - `worlds/`
+   - `groups/`
+   - `settings.json` persona fields when needed
+3. Resource import uses content-hash dedupe so same-content files are reused even when file names differ.
+4. `Import Local` puts resources into normal SillyTavern resource folders and stores the chat snapshot into local Chat Vault.
+5. `Restore as New Chat` writes a real SillyTavern chat file after resources are ready.
+
 ## Layer Diagram
 
 ```text
@@ -70,15 +96,25 @@ The goal is to keep backup and recovery logic independent from the current chat 
 │ snapshot write/read                          │
 │ draft write/read                             │
 │ global scope index rebuild                   │
+│ optional git cloud vault sync                │
 ├───────────────────────────────────────────────┤
 │ Storage Layer                                │
 │ data/<user>/user/files/chat-vault/           │
 │ scope-aliases.json                           │
 │ scopes-index.json                            │
+│ cloud-config.json                            │
 │ scopes/<label>__<scopeId>/                   │
 │   index.json                                 │
 │   draft.json                                 │
 │   snapshots/*.jsonl                          │
+│ cloud/remotes/<repoKey>/repo/                │
+│   vault.json                                 │
+│   manifest.json                              │
+│   devices/*.json                             │
+│   objects/meta/<scopeId>/*.json              │
+│   objects/snapshots/<scopeId>/*.jsonl        │
+│   objects/resource-meta/<kind>/*.json        │
+│   objects/resource-data/<kind>/*             │
 └───────────────────────────────────────────────┘
 ```
 
@@ -123,3 +159,30 @@ So drafts live in `draft.json`, not inside snapshot history.
 
 The recovery tab is backed by `/scope/list` and `scopes-index.json`.
 This allows browsing backups even when the current chat cannot be opened normally.
+
+### Git cloud vault does not Git-ify the live data directory
+
+The cloud sync layer uses its own workspace under `user/files/chat-vault/cloud/`.
+It never turns the live SillyTavern `data/` tree into a shared Git repository.
+
+### Cloud retention is append-only by default
+
+Cloud sync no longer infers remote deletion from one device's current local state.
+If a device later deletes local cards, lorebooks, personas, or local backups, that does not silently erase older cloud copies.
+Cloud deletion is explicit and per backup.
+
+### Device state files are auxiliary, not the source of truth
+
+Each device still writes a lightweight state file, but the remote catalog is rebuilt from cloud snapshot metadata itself.
+That means existing cloud backups remain visible even if one device no longer publishes them locally.
+
+### Resource imports prefer hash reuse over filename identity
+
+For file-like resources such as:
+
+- character cards
+- persona avatar images
+- lorebook JSON files
+
+the importer first scans the destination directory for matching content hash.
+If a match exists, it reuses the existing file instead of importing a duplicate under another name.

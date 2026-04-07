@@ -3,6 +3,7 @@
 [中文](README.md)
 
 Chat Vault is a server-backed SillyTavern extension for chat backups, unsaved edit recovery, and disaster recovery.
+It can also push selected backups into a Git repository as an off-site cloud vault.
 
 It does not depend on the current chat `jsonl` still being healthy.
 It also does not use browser `IndexedDB` as the primary store.
@@ -27,7 +28,11 @@ All independent backups and unsaved edits are written to:
 - **Chat rename continuity** through scope rebind when SillyTavern renames a chat
 - **Faster disk flush** by calling `context.saveChat()` after commit events
 - **Backup management** with preview, restore-as-new, overwrite-current, long-term keep, rename, and delete
+- **Git Cloud Vault** that pushes long-term and stable backups into a separate Git repository for cross-device recovery
+- **Resource-aware cloud restore** that can bring over character cards, personas, lorebooks, and groups together with the chat
+- **Append-only cloud retention with manual cleanup** so local deletion does not silently wipe older cloud copies
 - **Full panel UI** with floating orb, mobile layout, themes, and Chinese/English i18n
+- **Better long-list handling** with collapsible modules, inner scrolling panels, and search for both local and cloud backups
 
 ## Quick Install
 
@@ -84,7 +89,8 @@ It does not automatically delete existing backup data under `user/files/chat-vau
 1. Open the `Chat Vault` drawer in extension settings, or tap the floating orb
 2. In **Current Chat**, view unsaved edits, auto backups, and manual backups
 3. In **Disaster Recovery**, browse global chat scopes and restore any backup as a new chat
-4. In **Settings**, adjust auto backup count, flush delay, draft sync interval, naming templates, and themes
+4. In **Cloud Vault**, configure the Git repository, sync to the remote vault, browse and search the remote catalog, and import or restore remote backups
+5. In **Settings**, adjust auto backup count, flush delay, draft sync interval, naming templates, and themes
 
 ## Data Layout
 
@@ -98,10 +104,14 @@ It does not automatically delete existing backup data under `user/files/chat-vau
 - Root: `data/<user>/user/files/chat-vault/`
 - Global scope index: `scopes-index.json`
 - Scope alias bindings: `scope-aliases.json`
+- Cloud config: `cloud-config.json`
 - Per-scope directory: `scopes/<label>__<scopeId>/`
 - Backup index: `index.json`
 - Unsaved edit mirror: `draft.json`
 - Snapshot files: `snapshots/*.jsonl`
+- Git cloud workspace: `cloud/remotes/<repoKey>/repo/`
+- Cloud resource metadata: `cloud/remotes/<repoKey>/repo/objects/resource-meta/<kind>/*.json`
+- Cloud resource blobs: `cloud/remotes/<repoKey>/repo/objects/resource-data/<kind>/*`
 
 ## FAQ
 
@@ -138,6 +148,32 @@ Direct filesystem renames do not trigger that binding logic.
 
 The current-chat page shows backups for the currently active chat line.
 The disaster recovery page shows a global scope list independent from the current chat being open, which is useful when the original chat file is broken, missing, or hard to identify.
+
+**Q: Is Cloud Vault real-time sync?**
+
+No.
+Local Chat Vault storage is still the main recovery chain.
+The Git remote is a low-frequency off-site vault.
+
+**Q: What is the difference between `Import Local` and `Restore as New Chat`?**
+
+`Import Local` puts character cards, personas, lorebooks, groups, and the chat snapshot into this device's normal SillyTavern resource folders plus local Chat Vault storage.
+It does not create a live chat file under `data/<user>/chats/` yet.
+
+`Restore as New Chat` imports missing resources first, then creates a brand new live chat file immediately.
+
+**Q: If I delete local cards, personas, lorebooks, or local backups later, will Cloud Vault also lose the old copy?**
+
+Not automatically.
+Cloud Vault now behaves like an append-only vault.
+Sync only adds or updates published data; it does not silently remove old cloud copies just because one device deleted them locally.
+Cloud deletion is explicit and per-backup.
+
+**Q: Why does multi-device Cloud Vault avoid the usual “Git the whole data directory” conflict mess?**
+
+Because it never turns the live `/data` directory into a shared Git working tree.
+It writes selected backup objects and linked resources into a separate workspace.
+The remote catalog is rebuilt from the cloud snapshot objects already stored there, not from whatever one device still has locally.
 
 ## Related Docs
 
