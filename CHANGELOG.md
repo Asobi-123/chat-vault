@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-04-14
+
+### Fixed
+
+- Added a CSRF self-heal retry path for Chat Vault API calls and restore/write requests so one stale token mismatch is retried automatically after fetching a fresh `/csrf-token`.
+
 ## [0.2.0] - 2026-04-08
 
 ### Added

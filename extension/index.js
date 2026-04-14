@@ -65,6 +65,8 @@ let cloudManifestCache = null;
 let activeCloudScopeId = '';
 let currentThemeId = 'auto';
 let cloudToolbarBusy = false;
+let csrfOverrideToken = '';
+let csrfRefreshPromise = null;
 
 function buildThemeButtons() {
     return Object.keys(THEMES).map((themeId) => {
@@ -1056,33 +1058,99 @@ function installRenameBridge() {
     renameBridgeInstalled = true;
 }
 
-function getHeaders() {
+function getHeaders({ json = true, headers = {} } = {}) {
     const context = getContext();
-    return {
+    const mergedHeaders = {
         ...(context?.getRequestHeaders ? context.getRequestHeaders() : {}),
-        'Content-Type': 'application/json',
+        ...(headers && typeof headers === 'object' ? headers : {}),
     };
+    if (json) {
+        mergedHeaders['Content-Type'] = 'application/json';
+    }
+    if (csrfOverrideToken) {
+        mergedHeaders['X-CSRF-Token'] = csrfOverrideToken;
+    }
+    return mergedHeaders;
+}
+
+function isInvalidCsrfError(status, text = '') {
+    return Number(status) === 403 && /invalid csrf token/i.test(String(text || ''));
+}
+
+async function refreshCsrfToken() {
+    if (csrfRefreshPromise) {
+        return csrfRefreshPromise;
+    }
+
+    csrfRefreshPromise = (async () => {
+        const response = await fetch('/csrf-token', {
+            method: 'GET',
+            cache: 'no-cache',
+        });
+        if (!response.ok) {
+            throw new Error(response.statusText || 'failed_to_refresh_csrf_token');
+        }
+
+        const data = await response.json();
+        const token = String(data?.token || '').trim();
+        if (!token) {
+            throw new Error('failed_to_refresh_csrf_token');
+        }
+
+        csrfOverrideToken = token;
+        return token;
+    })().finally(() => {
+        csrfRefreshPromise = null;
+    });
+
+    return csrfRefreshPromise;
+}
+
+async function fetchWithCsrfRetry(url, init = {}, { expectJson = false } = {}) {
+    let lastError = null;
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+        const response = await fetch(url, {
+            cache: 'no-cache',
+            ...init,
+            headers: getHeaders({
+                json: Boolean(init.body),
+                headers: init.headers || {},
+            }),
+        });
+
+        if (response.ok) {
+            if (!expectJson) {
+                return response;
+            }
+
+            const contentType = response.headers.get('content-type') || '';
+            if (contentType.includes('application/json')) {
+                return response.json();
+            }
+            return {};
+        }
+
+        const text = await response.text();
+        lastError = new Error(text || response.statusText || 'Request failed');
+        lastError.status = response.status;
+
+        if (attempt === 0 && isInvalidCsrfError(response.status, text)) {
+            await refreshCsrfToken();
+            continue;
+        }
+
+        throw lastError;
+    }
+
+    throw lastError || new Error('Request failed');
 }
 
 async function callApi(path, body = {}) {
-    const response = await fetch(`${API_ROOT}${path}`, {
+    return fetchWithCsrfRetry(`${API_ROOT}${path}`, {
         method: 'POST',
-        headers: getHeaders(),
         body: JSON.stringify(body),
-        cache: 'no-cache',
-    });
-
-    if (!response.ok) {
-        const text = await response.text();
-        throw new Error(text || response.statusText || 'Request failed');
-    }
-
-    const contentType = response.headers.get('content-type') || '';
-    if (contentType.includes('application/json')) {
-        return response.json();
-    }
-
-    return {};
+    }, { expectJson: true });
 }
 
 function setBackendStatus(text, kind = 'idle') {
@@ -2447,9 +2515,8 @@ async function saveCharacterChatSnapshot(context, targetCharacterId, chatName, h
         ...cloneJson(messages, []),
     ];
 
-    const response = await fetch('/api/chats/save', {
+    const response = await fetchWithCsrfRetry('/api/chats/save', {
         method: 'POST',
-        headers: context.getRequestHeaders?.() || {},
         body: JSON.stringify({
             ch_name: character.name,
             file_name: chatName,
@@ -2483,18 +2550,16 @@ async function saveGroupChatSnapshot(context, targetGroupId, chatName, header, m
     }
     group.past_metadata[chatName] = cloneJson(header?.chat_metadata, {});
 
-    const saveGroupResponse = await fetch('/api/groups/edit', {
+    const saveGroupResponse = await fetchWithCsrfRetry('/api/groups/edit', {
         method: 'POST',
-        headers: context.getRequestHeaders?.() || {},
         body: JSON.stringify(group),
     });
     if (!saveGroupResponse.ok) {
         throw new Error(`failed_to_save_group_meta:${saveGroupResponse.status}`);
     }
 
-    const saveChatResponse = await fetch('/api/chats/group/save', {
+    const saveChatResponse = await fetchWithCsrfRetry('/api/chats/group/save', {
         method: 'POST',
-        headers: context.getRequestHeaders?.() || {},
         body: JSON.stringify({
             id: chatName,
             chat: cloneJson(messages, []),
@@ -2598,11 +2663,9 @@ async function overwriteCurrentChat(snapshotId) {
             force: true,
         };
 
-    const response = await fetch(endpoint, {
+    const response = await fetchWithCsrfRetry(endpoint, {
         method: 'POST',
-        headers: getHeaders(),
         body: JSON.stringify(body),
-        cache: 'no-cache',
     });
 
     if (!response.ok) {
