@@ -7,6 +7,13 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-05-19
+
+### Fixed
+
+- Fixed Cloud Vault cross-device restore so old user messages now remap persona avatar references to the target device's actual local avatar filename, instead of restoring with broken user avatar images.
+- Covered both persona avatar URL styles during restore remapping: `/thumbnail?type=persona&file=...` and legacy `User Avatars/...`.
+
 ## [0.2.1] - 2026-04-14
 
 ### Fixed

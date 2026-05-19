@@ -2574,6 +2574,46 @@ function replaceAvatarToken(value, oldAvatar, newAvatar) {
         .replaceAll(oldAvatar, newAvatar);
 }
 
+function remapMessageAvatarReferences(message, characterAvatarMap, personaAvatarMap) {
+    if (!message || typeof message !== 'object') {
+        return;
+    }
+
+    const isUserMessage = Boolean(message.is_user);
+    const originalAvatar = asString(message.original_avatar).trim();
+    const forceAvatar = asString(message.force_avatar).trim();
+
+    if (isUserMessage) {
+        if (originalAvatar && personaAvatarMap.has(originalAvatar)) {
+            const nextAvatar = personaAvatarMap.get(originalAvatar);
+            message.original_avatar = nextAvatar;
+            if (forceAvatar) {
+                message.force_avatar = replaceAvatarToken(forceAvatar, originalAvatar, nextAvatar);
+            }
+            return;
+        }
+
+        if (forceAvatar) {
+            let nextForceAvatar = forceAvatar;
+            for (const [oldAvatar, nextAvatar] of personaAvatarMap.entries()) {
+                nextForceAvatar = replaceAvatarToken(nextForceAvatar, oldAvatar, nextAvatar);
+            }
+            if (nextForceAvatar !== forceAvatar) {
+                message.force_avatar = nextForceAvatar;
+            }
+        }
+        return;
+    }
+
+    if (originalAvatar && characterAvatarMap.has(originalAvatar)) {
+        const nextAvatar = characterAvatarMap.get(originalAvatar);
+        message.original_avatar = nextAvatar;
+        if (forceAvatar) {
+            message.force_avatar = replaceAvatarToken(forceAvatar, originalAvatar, nextAvatar);
+        }
+    }
+}
+
 function buildImportedFileName(baseName, extension, hash, directoryPath) {
     const safeBase = sanitizePathPart(baseName, 'resource', 96);
     const safeExtension = asString(extension).trim().toLowerCase();
@@ -3153,14 +3193,7 @@ function prepareCloudSnapshotResources(directories, cloudPaths, meta, snapshot) 
     }
 
     for (const message of preparedMessages) {
-        const originalAvatar = asString(message.original_avatar).trim();
-        if (originalAvatar && characterAvatarMap.has(originalAvatar)) {
-            const nextAvatar = characterAvatarMap.get(originalAvatar);
-            message.original_avatar = nextAvatar;
-            if (message.force_avatar) {
-                message.force_avatar = replaceAvatarToken(message.force_avatar, originalAvatar, nextAvatar);
-            }
-        }
+        remapMessageAvatarReferences(message, characterAvatarMap, personaAvatarMap);
     }
 
     return {
