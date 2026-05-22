@@ -93,7 +93,7 @@ async function main() {
         console.log(`已删除扩展目录: ${extensionTargetDir}`);
     }
     console.log(`已删除插件目录: ${serverPluginTargetDir}`);
-    console.log('如需完全停用 server plugins，请手动把 config.yaml 里的 enableServerPlugins 改回 false。');
+    console.log('如需完全停用 server plugins，请手动把生效配置文件里的 enableServerPlugins 改回 false（通常是 config/config.yaml 或根目录 config.yaml）。');
 }
 
 await main();

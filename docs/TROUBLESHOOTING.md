@@ -7,7 +7,7 @@ This guide covers the most common setup and runtime issues for Chat Vault.
 Check these points:
 
 - `plugins/chat-vault/index.mjs` exists under the target SillyTavern root
-- `config.yaml` has `enableServerPlugins: true`
+- the active config file has `enableServerPlugins: true` (usually `config/config.yaml`, otherwise root `config.yaml`)
 - SillyTavern has been restarted after installation
 - the server startup log shows `chat-vault` being initialized
 

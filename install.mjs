@@ -98,10 +98,33 @@ function upsertYamlBoolean(text, key, nextValue) {
     return `${normalized ? `${normalized}\n` : ''}${key}: ${nextValue ? 'true' : 'false'}\n`;
 }
 
+function getConfigPathCandidates(sillyTavernRoot) {
+    return [
+        path.join(sillyTavernRoot, 'config', 'config.yaml'),
+        path.join(sillyTavernRoot, 'config.yaml'),
+    ];
+}
+
+function resolveWritableConfigPath(sillyTavernRoot) {
+    const candidates = getConfigPathCandidates(sillyTavernRoot);
+    const existingPath = candidates.find((candidate) => fs.existsSync(candidate));
+    if (existingPath) {
+        return existingPath;
+    }
+
+    const nestedConfigDir = path.dirname(candidates[0]);
+    if (fs.existsSync(nestedConfigDir) && fs.statSync(nestedConfigDir).isDirectory()) {
+        return candidates[0];
+    }
+
+    return candidates[1];
+}
+
 function patchConfigYaml(sillyTavernRoot) {
-    const configPath = path.join(sillyTavernRoot, 'config.yaml');
+    const configPath = resolveWritableConfigPath(sillyTavernRoot);
     const originalText = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf8') : '';
     const nextText = upsertYamlBoolean(originalText, 'enableServerPlugins', true);
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
     fs.writeFileSync(configPath, nextText, 'utf8');
     return configPath;
 }

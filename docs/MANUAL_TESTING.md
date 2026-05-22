@@ -21,7 +21,7 @@ Expected:
 
 - If only one nearby SillyTavern exists, the installer finds it automatically.
 - If multiple nearby SillyTavern directories exist, the installer asks which one to use.
-- `config.yaml` is updated to enable server plugins.
+- the active config file is updated to enable server plugins, usually `config/config.yaml` and otherwise root `config.yaml`.
 
 ## 2. Backend Ready And Panel Entry
 

@@ -7,6 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-05-22
+
+### Fixed
+
+- Fixed `install.mjs` writing `enableServerPlugins` into the wrong config file for Docker-style SillyTavern layouts that mount `./config` into the container.
+- The installer now prefers `config/config.yaml` when present, and only falls back to root `config.yaml` for non-nested layouts.
+- Updated installer, uninstaller, and docs wording to refer to the active SillyTavern config file instead of always assuming root `config.yaml`.
+
 ## [0.2.2] - 2026-05-19
 
 ### Fixed

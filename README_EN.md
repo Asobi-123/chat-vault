@@ -51,7 +51,7 @@ node install.mjs
 - auto-detect the SillyTavern root directory
 - prefer installing the front-end extension into `data/<user>/extensions/chat-vault`
 - install the server plugin into `plugins/chat-vault`
-- set `enableServerPlugins: true` in `config.yaml`
+- set `enableServerPlugins: true` in the active config file, preferring `config/config.yaml` and falling back to root `config.yaml`
 - clean same-name leftovers before reinstall
 - keep existing `user/files/chat-vault` backup data untouched
 

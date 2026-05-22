@@ -51,7 +51,7 @@ node install.mjs
 - 自动定位 SillyTavern 根目录
 - 优先复制前端扩展到 `data/<user>/extensions/chat-vault`
 - 复制 server plugin 到 `plugins/chat-vault`
-- 自动把 `config.yaml` 里的 `enableServerPlugins` 改成 `true`
+- 自动把生效配置文件里的 `enableServerPlugins` 改成 `true`，优先使用 `config/config.yaml`，否则回退到根目录 `config.yaml`
 - 清掉同名旧安装残留
 - 不自动删除已有 `user/files/chat-vault` 备份数据
 
