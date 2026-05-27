@@ -54,10 +54,11 @@ The goal is to keep backup and recovery logic independent from the current chat 
 3. The server plugin selects:
    - all long-term keep backups
    - one stable backup per scope
-4. For each selected snapshot, the server plugin also collects linked resources such as character cards, persona data, lorebooks, and group definitions.
-5. Those snapshots and resources are written into a dedicated Git workspace, not into the live SillyTavern `data` tree.
-6. The remote `manifest.json` is rebuilt from the cloud snapshot metadata already stored in that workspace.
-7. Another device can fetch that manifest, browse the remote scopes, import resources plus the snapshot into local Chat Vault, or restore it as a new chat.
+4. Each selected snapshot is then processed one entry at a time. For every entry, the server plugin streams its linked resources (character cards, persona data, lorebooks, group definitions): read the file, hash it, write it into the cloud workspace under its content-addressed path, and release the buffer before moving on. The snapshot JSONL itself is written and released the same way. This keeps peak memory bounded to the size of a single chat plus a single resource, even when a selection spans many large chats.
+5. Resources are stored under content-addressed paths so duplicates across snapshots reuse the same file; an existing file at the target hash path is treated as a content match without re-reading and comparing buffers.
+6. None of this touches the live SillyTavern `data` tree — the cloud workspace is a dedicated directory.
+7. The remote `manifest.json` is rebuilt from the cloud snapshot metadata already stored in that workspace.
+8. Another device can fetch that manifest, browse the remote scopes, import resources plus the snapshot into local Chat Vault, or restore it as a new chat.
 
 ### 6. Cloud restore and local import
 
