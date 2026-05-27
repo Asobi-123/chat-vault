@@ -1417,13 +1417,22 @@ function addCloudResourceRecord(resourceMap, refs, resource) {
     appendCloudResourceRef(refs, createCloudResourceRef(resource));
 }
 
-function collectLocalSnapshotResourceBundle(directories, source, snapshot) {
+function collectLocalSnapshotResourceBundle(directories, source, snapshot, onResource = null) {
     const refs = [];
-    const resourceMap = new Map();
+    const resourceMap = onResource ? null : new Map();
     const header = asObject(snapshot[0]);
     const chatMetadata = asObject(header.chat_metadata);
     const extraWorldBindingMap = getCharacterExtraWorldBindingMap(directories);
     const { powerUser } = getPowerUserSettingsRecord(directories);
+
+    const dispatch = (record) => {
+        if (onResource) {
+            onResource(record);
+            appendCloudResourceRef(refs, createCloudResourceRef(record));
+        } else {
+            addCloudResourceRecord(resourceMap, refs, record);
+        }
+    };
 
     const addCharacterByAvatar = (avatarUrl, role, displayName = '') => {
         const normalizedAvatarUrl = asString(avatarUrl).trim();
@@ -1436,7 +1445,7 @@ function collectLocalSnapshotResourceBundle(directories, source, snapshot) {
             return;
         }
 
-        addCloudResourceRecord(resourceMap, refs, createCloudResourceRecord({
+        dispatch(createCloudResourceRecord({
             kind: 'character_card',
             role,
             buffer: fs.readFileSync(filePath),
@@ -1451,7 +1460,7 @@ function collectLocalSnapshotResourceBundle(directories, source, snapshot) {
                 continue;
             }
 
-            addCloudResourceRecord(resourceMap, refs, createCloudResourceRecord({
+            dispatch(createCloudResourceRecord({
                 kind: 'world_info',
                 role: 'character_additional_world',
                 buffer: fs.readFileSync(worldPath),
@@ -1474,7 +1483,7 @@ function collectLocalSnapshotResourceBundle(directories, source, snapshot) {
             return;
         }
 
-        addCloudResourceRecord(resourceMap, refs, createCloudResourceRecord({
+        dispatch(createCloudResourceRecord({
             kind: 'world_info',
             role,
             buffer: fs.readFileSync(filePath),
@@ -1492,7 +1501,7 @@ function collectLocalSnapshotResourceBundle(directories, source, snapshot) {
 
         const avatarPath = path.join(directories.avatars, record.avatarId);
         if (fs.existsSync(avatarPath)) {
-            addCloudResourceRecord(resourceMap, refs, createCloudResourceRecord({
+            dispatch(createCloudResourceRecord({
                 kind: 'persona_avatar',
                 role,
                 buffer: fs.readFileSync(avatarPath),
@@ -1502,7 +1511,7 @@ function collectLocalSnapshotResourceBundle(directories, source, snapshot) {
             }));
         }
 
-        addCloudResourceRecord(resourceMap, refs, createCloudResourceRecord({
+        dispatch(createCloudResourceRecord({
             kind: 'persona_profile',
             role,
             buffer: Buffer.from(JSON.stringify({
@@ -1519,7 +1528,7 @@ function collectLocalSnapshotResourceBundle(directories, source, snapshot) {
             const lorebookName = record.descriptor.lorebook;
             const lorebookPath = path.join(directories.worlds, `${lorebookName}.json`);
             if (fs.existsSync(lorebookPath)) {
-                addCloudResourceRecord(resourceMap, refs, createCloudResourceRecord({
+                dispatch(createCloudResourceRecord({
                     kind: 'world_info',
                     role: 'persona_lorebook',
                     buffer: fs.readFileSync(lorebookPath),
@@ -1535,7 +1544,7 @@ function collectLocalSnapshotResourceBundle(directories, source, snapshot) {
     if (source.kind === 'group') {
         const groupRecord = readGroupDefinitionRecord(directories, source.groupId, source.groupName);
         if (groupRecord) {
-            addCloudResourceRecord(resourceMap, refs, createCloudResourceRecord({
+            dispatch(createCloudResourceRecord({
                 kind: 'group_definition',
                 role: 'scope_group',
                 buffer: Buffer.from(groupRecord.text, 'utf8'),
@@ -1563,9 +1572,11 @@ function collectLocalSnapshotResourceBundle(directories, source, snapshot) {
 
     return {
         refs: refs.sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))),
-        resources: Array.from(resourceMap.values()).sort((left, right) => {
-            return `${left.kind}:${left.displayName}:${left.hash}`.localeCompare(`${right.kind}:${right.displayName}:${right.hash}`);
-        }),
+        resources: resourceMap
+            ? Array.from(resourceMap.values()).sort((left, right) => {
+                return `${left.kind}:${left.displayName}:${left.hash}`.localeCompare(`${right.kind}:${right.displayName}:${right.hash}`);
+            })
+            : [],
     };
 }
 
@@ -1914,10 +1925,12 @@ function getLatestStableEntry(entries) {
     return normalizedEntries.find((entry) => entry.mode !== 'auto') || normalizedEntries[0] || null;
 }
 
-function collectLocalCloudSelection(baseDirectory, config, directories) {
+function collectLocalCloudSelection(baseDirectory, config, directories, cloudPaths = null) {
     const scopesRoot = ensureDirectory(path.join(baseDirectory, 'scopes'));
     const scopes = [];
-    const selectionResources = new Map();
+    const streamingPersist = Boolean(cloudPaths);
+    const selectionResources = streamingPersist ? null : new Map();
+    const persistedResourceKeys = streamingPersist ? new Set() : null;
 
     for (const scopeDirectory of listScopeDirectories(scopesRoot)) {
         const index = readJson(path.join(scopeDirectory, INDEX_FILE_NAME), null);
@@ -1962,11 +1975,20 @@ function collectLocalCloudSelection(baseDirectory, config, directories) {
             const snapshot = readSnapshotFile(snapshotPath);
             const jsonl = snapshotToJsonl(snapshot);
             const fingerprint = asString(entry.fingerprint).trim() || sha1(jsonl);
-            const resourceBundle = directories
-                ? collectLocalSnapshotResourceBundle(directories, source, snapshot)
-                : { refs: [], resources: [] };
-            for (const resource of resourceBundle.resources) {
-                selectionResources.set(`${resource.kind}:${resource.hash}`, resource);
+            let resourceBundle;
+            if (directories) {
+                if (streamingPersist) {
+                    resourceBundle = collectLocalSnapshotResourceBundle(directories, source, snapshot, (record) => {
+                        persistCloudResourceImmediately(cloudPaths, record, persistedResourceKeys);
+                    });
+                } else {
+                    resourceBundle = collectLocalSnapshotResourceBundle(directories, source, snapshot);
+                    for (const resource of resourceBundle.resources) {
+                        selectionResources.set(`${resource.kind}:${resource.hash}`, resource);
+                    }
+                }
+            } else {
+                resourceBundle = { refs: [], resources: [] };
             }
             scopeEntries.push({
                 ...entry,
@@ -1994,8 +2016,8 @@ function collectLocalCloudSelection(baseDirectory, config, directories) {
         scopes,
         scopeCount: scopes.length,
         snapshotCount: scopes.reduce((sum, scope) => sum + scope.entries.length, 0),
-        resources: Array.from(selectionResources.values()),
-        resourceCount: selectionResources.size,
+        resources: streamingPersist ? [] : Array.from(selectionResources.values()),
+        resourceCount: streamingPersist ? persistedResourceKeys.size : selectionResources.size,
     };
 }
 
@@ -2062,9 +2084,8 @@ function writeCloudSelectionObjects(cloudPaths, config, selection) {
                     lastUploadedAt: Date.now(),
                 },
             };
-            const previousJsonl = fs.existsSync(objectPaths.snapshotPath)
-                ? fs.readFileSync(objectPaths.snapshotPath, 'utf8')
-                : null;
+            const previousFingerprint = asString(existingMeta?.fingerprint).trim();
+            const snapshotExists = fs.existsSync(objectPaths.snapshotPath);
             const comparablePreviousMeta = existingMeta
                 ? {
                     ...existingMeta,
@@ -2092,7 +2113,7 @@ function writeCloudSelectionObjects(cloudPaths, config, selection) {
                 },
             };
 
-            if (previousJsonl !== entry.jsonl) {
+            if (!snapshotExists || previousFingerprint !== entry.fingerprint) {
                 writeTextAtomic(objectPaths.snapshotPath, entry.jsonl);
             }
             if (JSON.stringify(comparablePreviousMeta) !== JSON.stringify(comparableNextMeta)) {
@@ -2102,45 +2123,50 @@ function writeCloudSelectionObjects(cloudPaths, config, selection) {
     }
 }
 
-function writeCloudSelectionResources(cloudPaths, selection) {
-    for (const resource of asArray(selection.resources)) {
-        const normalized = asObject(resource);
-        const kind = asString(normalized.kind).trim();
-        const hash = asString(normalized.hash).trim();
-        if (!kind || !hash || !Buffer.isBuffer(normalized.buffer)) {
-            continue;
-        }
+function persistCloudResourceImmediately(cloudPaths, resource, persistedKeys) {
+    const normalized = asObject(resource);
+    const kind = asString(normalized.kind).trim();
+    const hash = asString(normalized.hash).trim();
+    if (!kind || !hash || !Buffer.isBuffer(normalized.buffer)) {
+        return;
+    }
 
-        const resourcePaths = getCloudResourcePaths(
-            cloudPaths,
-            kind,
-            hash,
-            asString(normalized.extension).trim() || path.extname(asString(normalized.fileName).trim()),
-        );
-        const nextMeta = {
-            version: CLOUD_FORMAT_VERSION,
-            kind,
-            hash,
-            fileName: asString(normalized.fileName).trim(),
-            extension: asString(normalized.extension).trim(),
-            displayName: asString(normalized.displayName).trim(),
-            avatarUrl: asString(normalized.avatarUrl).trim(),
-            ownerAvatarUrl: asString(normalized.ownerAvatarUrl).trim(),
-            groupId: asString(normalized.groupId).trim(),
-            groupName: asString(normalized.groupName).trim(),
-            worldName: asString(normalized.worldName).trim(),
-            dataPath: resourcePaths.dataRelativePath,
-        };
-        const existingMeta = readJson(resourcePaths.metaPath, null);
-        const hasSameBuffer = fs.existsSync(resourcePaths.dataPath)
-            && Buffer.compare(fs.readFileSync(resourcePaths.dataPath), normalized.buffer) === 0;
+    const cacheKey = `${kind}:${hash}`;
+    if (persistedKeys && persistedKeys.has(cacheKey)) {
+        return;
+    }
 
-        if (!hasSameBuffer) {
-            writeBufferAtomic(resourcePaths.dataPath, normalized.buffer);
-        }
-        if (JSON.stringify(asObject(existingMeta)) !== JSON.stringify(nextMeta)) {
-            writeJsonAtomic(resourcePaths.metaPath, nextMeta);
-        }
+    const resourcePaths = getCloudResourcePaths(
+        cloudPaths,
+        kind,
+        hash,
+        asString(normalized.extension).trim() || path.extname(asString(normalized.fileName).trim()),
+    );
+    const nextMeta = {
+        version: CLOUD_FORMAT_VERSION,
+        kind,
+        hash,
+        fileName: asString(normalized.fileName).trim(),
+        extension: asString(normalized.extension).trim(),
+        displayName: asString(normalized.displayName).trim(),
+        avatarUrl: asString(normalized.avatarUrl).trim(),
+        ownerAvatarUrl: asString(normalized.ownerAvatarUrl).trim(),
+        groupId: asString(normalized.groupId).trim(),
+        groupName: asString(normalized.groupName).trim(),
+        worldName: asString(normalized.worldName).trim(),
+        dataPath: resourcePaths.dataRelativePath,
+    };
+
+    if (!fs.existsSync(resourcePaths.dataPath)) {
+        writeBufferAtomic(resourcePaths.dataPath, normalized.buffer);
+    }
+    const existingMeta = readJson(resourcePaths.metaPath, null);
+    if (JSON.stringify(asObject(existingMeta)) !== JSON.stringify(nextMeta)) {
+        writeJsonAtomic(resourcePaths.metaPath, nextMeta);
+    }
+
+    if (persistedKeys) {
+        persistedKeys.add(cacheKey);
     }
 }
 
@@ -2446,7 +2472,6 @@ async function pushCloudSelectionToRemote(baseDirectory, directories) {
         throw new Error('repo_url_or_token_missing');
     }
 
-    const selection = collectLocalCloudSelection(baseDirectory, initialConfig, directories);
     let lastError = null;
     const repoPath = getCloudPaths(baseDirectory, initialConfig).repoPath;
 
@@ -2456,8 +2481,8 @@ async function pushCloudSelectionToRemote(baseDirectory, directories) {
             try {
                 const cloudPaths = await ensureCloudRepositoryReady(baseDirectory, config);
                 writeCloudMarker(cloudPaths, config);
+                const selection = collectLocalCloudSelection(baseDirectory, config, directories, cloudPaths);
                 writeCloudSelectionObjects(cloudPaths, config, selection);
-                writeCloudSelectionResources(cloudPaths, selection);
                 writeCloudDeviceSelection(cloudPaths, config, selection);
                 const manifest = rebuildCloudManifest(cloudPaths);
 

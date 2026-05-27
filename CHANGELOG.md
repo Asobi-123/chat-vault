@@ -7,6 +7,15 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-05-27
+
+### Fixed
+
+- Fixed Cloud Vault sync running out of memory on low-RAM hosts (notably Termux on Android) when the selection contained many chats or large character card PNGs. The previous flow loaded every selected resource buffer into memory before writing anything to disk, which routinely pushed the Node.js heap past 2-3 GB before any push happened.
+- Cloud resource persistence is now streamed: each character card / world info / persona avatar / persona profile / group definition is read, hashed, written to its content-addressed cloud path, and released individually instead of being buffered into one big in-memory map.
+- Removed the redundant second `fs.readFileSync` + `Buffer.compare` against the existing cloud resource file on every write. Because cloud resources are stored under their SHA-1 hash, a file existing at the target path is already equivalent to a content match.
+- Cloud snapshot rewrites now compare fingerprints from the existing meta file instead of reading the previous snapshot text back into memory just to do a string equality check.
+
 ## [0.2.3] - 2026-05-22
 
 ### Fixed
