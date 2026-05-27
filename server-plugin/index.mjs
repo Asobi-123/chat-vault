@@ -1354,10 +1354,18 @@ function createCloudResourceRecord({
     worldName = '',
 }) {
     const normalizedFileName = asString(fileName).trim();
+    const normalizedKind = asString(kind).trim();
+    let hash;
+    if (normalizedKind === 'character_card') {
+        const charaFingerprint = characterDefinitionFingerprint(buffer);
+        hash = charaFingerprint || hashBuffer(buffer);
+    } else {
+        hash = hashBuffer(buffer);
+    }
     return {
-        kind: asString(kind).trim(),
+        kind: normalizedKind,
         role: asString(role).trim(),
-        hash: hashBuffer(buffer),
+        hash,
         fileName: normalizedFileName,
         extension: path.extname(normalizedFileName).toLowerCase(),
         displayName: asString(displayName).trim(),
@@ -2716,6 +2724,35 @@ function findExistingFileByHash(directoryPath, extension, hash) {
     return '';
 }
 
+// Character cards specifically: scan PNGs and try both the chara-chunk
+// fingerprint (new-style 0.3.0+ backups) and the full-byte hash (legacy
+// 0.2.x backups). This means SillyTavern PNG byte drift no longer prevents
+// import-time dedupe — as long as the card definition matches, we reuse
+// the local file even if its full hash has changed.
+function findExistingCharacterCardByHash(charactersDir, hash) {
+    if (!asString(hash).trim() || !fs.existsSync(charactersDir)) {
+        return '';
+    }
+    for (const entry of fs.readdirSync(charactersDir, { withFileTypes: true })) {
+        if (!entry.isFile()) {
+            continue;
+        }
+        if (path.extname(entry.name).toLowerCase() !== '.png') {
+            continue;
+        }
+        const filePath = path.join(charactersDir, entry.name);
+        const buffer = fs.readFileSync(filePath);
+        const charaHash = characterDefinitionFingerprint(buffer);
+        if (charaHash && charaHash === hash) {
+            return entry.name;
+        }
+        if (hashBuffer(buffer) === hash) {
+            return entry.name;
+        }
+    }
+    return '';
+}
+
 function readCloudResourcePayload(cloudPaths, ref) {
     const resourcePaths = getCloudResourcePaths(
         cloudPaths,
@@ -2775,8 +2812,15 @@ function importCloudCharacterResource(directories, resourceMeta, buffer) {
     const desiredExtension = path.extname(originalAvatarUrl) || '.png';
     const desiredFileName = `${sanitizePathPart(desiredBaseName, 'character', 120)}${desiredExtension}`;
     const desiredPath = path.join(directories.characters, desiredFileName);
-    const incomingHash = hashBuffer(buffer);
-    const existingFileByHash = findExistingFileByHash(directories.characters, desiredExtension, incomingHash);
+
+    // 0.3.0+: prefer the chara-chunk fingerprint over the full PNG hash for
+    // dedupe purposes. This survives SillyTavern's runtime writes back into
+    // the PNG, which used to make the same card look "different" by bytes.
+    const incomingCharaHash = characterDefinitionFingerprint(buffer);
+    const incomingFullHash = hashBuffer(buffer);
+    const incomingHash = incomingCharaHash || incomingFullHash;
+
+    const existingFileByHash = findExistingCharacterCardByHash(directories.characters, incomingHash);
 
     if (existingFileByHash) {
         return {
@@ -2786,12 +2830,18 @@ function importCloudCharacterResource(directories, resourceMeta, buffer) {
         };
     }
 
-    if (fs.existsSync(desiredPath) && hashBuffer(fs.readFileSync(desiredPath)) === incomingHash) {
-        return {
-            originalAvatarUrl,
-            finalAvatarUrl: desiredFileName,
-            created: false,
-        };
+    if (fs.existsSync(desiredPath)) {
+        const existingBuffer = fs.readFileSync(desiredPath);
+        const existingCharaHash = characterDefinitionFingerprint(existingBuffer);
+        const matchesByChara = incomingCharaHash && existingCharaHash && existingCharaHash === incomingCharaHash;
+        const matchesByFull = hashBuffer(existingBuffer) === incomingFullHash;
+        if (matchesByChara || matchesByFull) {
+            return {
+                originalAvatarUrl,
+                finalAvatarUrl: desiredFileName,
+                created: false,
+            };
+        }
     }
 
     const finalFileName = fs.existsSync(desiredPath)
