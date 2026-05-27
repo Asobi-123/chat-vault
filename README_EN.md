@@ -31,7 +31,7 @@ All independent backups and unsaved edits are written to:
 - **Git Cloud Vault** that pushes long-term and stable backups into a separate Git repository for cross-device recovery
 - **Resource-aware cloud restore** that can bring over character cards, personas, lorebooks, and groups together with the chat
 - **Append-only cloud retention with manual cleanup** so local deletion does not silently wipe older cloud copies
-- **Character Card Merge** that consolidates same-name duplicate cards into one (with field-level definition diff preview and automatic PNG archiving)
+- **Character Card Merge** that consolidates same-name duplicate cards into one (with field-level definition diff preview, automatic PNG archiving, and one-click post-completion rollback)
 - **Full panel UI** with floating orb, mobile layout, themes, and Chinese/English i18n
 - **Better long-list handling** with collapsible modules, inner scrolling panels, and search for both local and cloud backups
 

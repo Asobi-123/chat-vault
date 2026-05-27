@@ -80,13 +80,16 @@ When `Import Local` or `Restore as New Chat` brings a character card back from t
 1. The tab scans `characters/` and groups PNGs whose `chara` chunk `name` field collides.
 2. Each duplicate group is rendered with both files' filenames, sizes, modification times, chat counts (number of `chats/<avatar>/*.jsonl`), and Chat Vault backup counts.
 3. Picking a group runs a 5-step wizard: review the pair, see a `chara`-chunk field-level diff, preview the on-disk impact, execute, and confirm completion.
-4. Execution archives both original PNGs into `merge-backup/<mergeId>/` first, then writes a `pending-merge.json` marker at the chat-vault root. Each subsequent step (overwrite primary PNG, rename to canonical filename, move secondary chats, delete secondary, rewrite group/persona/scope references) appends to the marker's `completedSteps` so an interrupted merge leaves a usable breadcrumb.
+4. Execution archives both original PNGs into `merge-backup/<mergeId>/` first, then writes a `pending-merge.json` marker at the chat-vault root. Each subsequent step (rename the kept card to its canonical filename, move the other card's chats in, delete the other PNG, rewrite group / persona / scope references) appends to the marker's `completedSteps` so an interrupted merge leaves a usable breadcrumb. The kept card's PNG bytes are never overwritten — `primary` in the data model is the card the user chose to keep.
 5. The merged card always ends up with the canonical filename `<character.name>.png` — any `__vault_<hex>` suffix is stripped. Chats and Chat Vault scopes are reattached to the canonical avatar name.
 6. The marker is dropped on success and rewritten as `merge-info.json` (permanent record). Only the most recent 5 archives are retained globally; older ones are pruned automatically.
 
-Rollback restores both original PNGs from `merge-backup/` and reverses reference rewrites but does not attempt to split apart already-merged chats — users wanting a complete revert can copy individual jsonl files out of the archive manually.
+Two distinct rollback paths exist:
 
-Cloud upload-side dedupe complements the merge tab: 0.3.0+ identifies character card resources in the cloud workspace by their `chara`-chunk fingerprint (canonical card definition fields only, with runtime fields excluded) rather than the full PNG bytes. Re-syncing the same card after SillyTavern writes runtime data back into the PNG no longer produces a new cloud copy. Legacy 0.2.x backups using full-byte hashes continue to resolve through a fallback lookup.
+- **Pending rollback**: if `pending-merge.json` still exists at startup (the merge crashed mid-flight), the UI offers to restore both original PNGs from the archive and reverse the partial reference rewrites. Already-moved chats are not split back apart.
+- **Post-completion rollback**: each finalized archive in `merge-backup/` is listed under "Recent merges" in the Card Merge tab (collapsed by default) with a "Roll back this merge" button. Clicking it restores both original PNGs, reverses avatar reference rewrites, and saves the current merged PNG aside as `post-merge-snapshot.png` inside the archive so a re-do is possible. Already-merged chats stay together — the merge execution does not track per-jsonl origin, so a clean split is not attempted.
+
+Cloud upload-side dedupe complements the merge tab: 0.3.0+ identifies character card resources in the cloud workspace by their `chara`-chunk fingerprint (canonical card definition fields only, with runtime fields excluded) rather than the full PNG bytes. Re-syncing the same card after SillyTavern writes runtime data back into the PNG no longer produces a new cloud copy. The restore path also tries the chara fingerprint first when looking for an existing local card to reuse, falling back to the full-byte hash for legacy 0.2.x backups.
 
 ## Layer Diagram
 
