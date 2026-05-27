@@ -144,6 +144,7 @@ function buildPanelHtml() {
                 <button type="button" class="cvt-tab active" data-cvt-tab="chat">${t('tabs.chat')}</button>
                 <button type="button" class="cvt-tab" data-cvt-tab="recovery">${t('tabs.recovery')}</button>
                 <button type="button" class="cvt-tab" data-cvt-tab="cloud">${t('tabs.cloud')}</button>
+                <button type="button" class="cvt-tab" data-cvt-tab="character-merge">${t('tabs.characterMerge')}</button>
                 <button type="button" class="cvt-tab" data-cvt-tab="settings">${t('tabs.settings')}</button>
             </nav>
             <div class="cvt-body">
@@ -359,6 +360,73 @@ function buildPanelHtml() {
                                 </label>
                                 <div id="cvt_cloud_checkpoint_list" class="cvt-list">
                                     <div class="cvt-empty">${t('cloud.emptySelectFirst')}</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="cvt-page" data-cvt-page="character-merge">
+                    <div id="cvm_pending_banner" class="cvt-card cvm-pending-banner" hidden>
+                        <div class="cvt-section-head">
+                            <strong>${t('characterMerge.pending.heading')}</strong>
+                        </div>
+                        <div class="cvt-card-body">
+                            <p id="cvm_pending_detail" class="cvt-note"></p>
+                            <div class="cvt-toolbar">
+                                <button id="cvm_pending_rollback" type="button" class="menu_button">${t('characterMerge.pending.rollback')}</button>
+                                <button id="cvm_pending_acknowledge" type="button" class="menu_button">${t('characterMerge.pending.acknowledge')}</button>
+                            </div>
+                            <div class="cvt-note">${t('characterMerge.pending.note')}</div>
+                        </div>
+                    </div>
+
+                    <div id="cvm_scan_view" class="cvm-view">
+                        <div class="cvt-card">
+                            <div class="cvt-section-head">
+                                <strong>${t('characterMerge.explainer.heading')}</strong>
+                                <div class="cvt-section-head-actions">${buildSectionToggle('cm_explainer')}</div>
+                            </div>
+                            <div class="${getCardBodyClass('cm_explainer')}" data-cvt-section="cm_explainer">
+                                <p class="cvt-note">${t('characterMerge.explainer.intro')}</p>
+                                <ul class="cvt-bullets">
+                                    <li>${t('characterMerge.explainer.cause1')}</li>
+                                    <li>${t('characterMerge.explainer.cause2')}</li>
+                                    <li>${t('characterMerge.explainer.cause3')}</li>
+                                </ul>
+                                <p class="cvt-note">${t('characterMerge.explainer.purpose')}</p>
+                            </div>
+                        </div>
+
+                        <div class="cvt-card">
+                            <div class="cvt-section-head">
+                                <strong>${t('characterMerge.scan.heading')}</strong>
+                                <div class="cvt-section-head-actions">
+                                    <button id="cvm_refresh" type="button" class="menu_button">${t('common.refresh')}</button>
+                                </div>
+                            </div>
+                            <div class="cvt-card-body" data-cvt-section="cm_groups">
+                                <div id="cvm_groups_list" class="cvt-list">
+                                    <div class="cvt-empty">${t('common.loading')}</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="cvm_wizard_view" class="cvm-view" hidden>
+                        <div class="cvt-card">
+                            <div class="cvt-section-head">
+                                <strong id="cvm_wizard_step_title">${t('characterMerge.wizard.step1.title')}</strong>
+                                <div class="cvt-section-head-actions">
+                                    <span id="cvm_wizard_progress" class="cvt-summary">1 / 5</span>
+                                </div>
+                            </div>
+                            <div class="cvt-card-body">
+                                <div id="cvm_wizard_content" class="cvm-wizard-content"></div>
+                                <div class="cvt-toolbar cvm-wizard-actions">
+                                    <button id="cvm_wizard_back" type="button" class="menu_button" hidden>${t('characterMerge.wizard.back')}</button>
+                                    <button id="cvm_wizard_cancel" type="button" class="menu_button">${t('characterMerge.wizard.cancel')}</button>
+                                    <button id="cvm_wizard_next" type="button" class="menu_button">${t('characterMerge.wizard.next')}</button>
                                 </div>
                             </div>
                         </div>
@@ -2890,6 +2958,414 @@ function onCommitEvent(trigger, messageId = null, commitType = '') {
     scheduleDraftMirror(30, { allowClear: true });
 }
 
+// === Character merge (0.3.0+) ===
+
+const cvmState = {
+    primary: null,
+    secondary: null,
+    preview: null,
+    diff: null,
+    executeResult: null,
+    step: 1,
+    busy: false,
+    confirmed: false,
+};
+
+function cvmEscapeHtml(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function cvmFormatTimestamp(ms) {
+    const value = Number(ms);
+    if (!value || Number.isNaN(value)) return t('common.unknownTime');
+    return new Date(value).toLocaleString();
+}
+
+function cvmFormatBytes(bytes) {
+    const n = Number(bytes);
+    if (!n || Number.isNaN(n)) return '—';
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+    return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function cvmTruncate(value, limit = 160) {
+    const text = String(value ?? '');
+    if (text.length <= limit) return text;
+    return `${text.slice(0, limit)}…`;
+}
+
+async function refreshCharacterMergeTab() {
+    await refreshCharacterMergePending();
+    await refreshCharacterMergeGroups();
+}
+
+async function refreshCharacterMergePending() {
+    const banner = document.getElementById('cvm_pending_banner');
+    const detail = document.getElementById('cvm_pending_detail');
+    if (!banner || !detail) return;
+    try {
+        const result = await callApi('/character-merge/pending');
+        if (result?.ok && result.pending) {
+            const p = result.pending;
+            detail.textContent = t('characterMerge.pending.summary', {
+                start: cvmFormatTimestamp(p.startedAt),
+                mergeId: p.mergeId || '?',
+                completed: (p.completedSteps || []).join(', ') || '—',
+            });
+            banner.hidden = false;
+            return;
+        }
+    } catch (error) {
+        console.warn('[chat-vault] pending merge check failed', error);
+    }
+    banner.hidden = true;
+}
+
+async function refreshCharacterMergeGroups() {
+    const list = document.getElementById('cvm_groups_list');
+    if (!list) return;
+    list.innerHTML = `<div class="cvt-empty">${cvmEscapeHtml(t('common.loading'))}</div>`;
+    try {
+        const result = await callApi('/character-merge/duplicates');
+        if (!result?.ok) {
+            list.innerHTML = `<div class="cvt-empty">${cvmEscapeHtml(t('characterMerge.scan.error'))}</div>`;
+            return;
+        }
+        renderDuplicateGroups(result.groups || []);
+    } catch (error) {
+        console.warn('[chat-vault] duplicate scan failed', error);
+        list.innerHTML = `<div class="cvt-empty">${cvmEscapeHtml(t('characterMerge.scan.error'))}</div>`;
+    }
+}
+
+function renderDuplicateGroups(groups) {
+    const list = document.getElementById('cvm_groups_list');
+    if (!list) return;
+    if (!groups.length) {
+        list.innerHTML = `<div class="cvt-empty">${cvmEscapeHtml(t('characterMerge.scan.empty'))}</div>`;
+        return;
+    }
+    const html = groups.map((group) => {
+        const cards = group.cards.map((card) => `
+            <div class="cvm-card-row">
+                <div class="cvm-card-name"><code>${cvmEscapeHtml(card.avatarFileName)}</code>${card.isVaultImported ? ` <span class="cvt-badge" data-kind="info">${cvmEscapeHtml(t('characterMerge.card.vaultImported'))}</span>` : ''}</div>
+                <div class="cvm-card-meta cvt-note">${cvmFormatBytes(card.fileSizeBytes)} · ${cvmEscapeHtml(cvmFormatTimestamp(card.modifiedAtMs))}${card.characterVersion ? ` · v${cvmEscapeHtml(card.characterVersion)}` : ''}</div>
+            </div>
+        `).join('');
+        return `
+            <div class="cvm-group cvt-card cvt-card-soft">
+                <div class="cvt-section-head">
+                    <strong>${cvmEscapeHtml(group.characterName)}</strong>
+                    <span class="cvt-summary">${cvmEscapeHtml(t('characterMerge.group.cardCount', { count: group.cards.length }))}</span>
+                </div>
+                <div class="cvt-card-body">
+                    ${cards}
+                    <div class="cvt-toolbar">
+                        <button type="button" class="menu_button cvm-start-merge" data-character-name="${cvmEscapeHtml(group.characterName)}">${cvmEscapeHtml(t('characterMerge.group.startMerge'))}</button>
+                    </div>
+                </div>
+            </div>
+        `;
+    }).join('');
+    list.innerHTML = html;
+}
+
+async function startMergeForGroup(characterName) {
+    const result = await callApi('/character-merge/duplicates');
+    if (!result?.ok) return;
+    const group = (result.groups || []).find((g) => g.characterName === characterName);
+    if (!group || group.cards.length < 2) {
+        toastr.info(t('characterMerge.scan.empty'));
+        return;
+    }
+    await enterMergeWizard(group.cards[0], group.cards[1]);
+}
+
+async function enterMergeWizard(primary, secondary) {
+    cvmState.primary = primary;
+    cvmState.secondary = secondary;
+    cvmState.preview = null;
+    cvmState.diff = null;
+    cvmState.executeResult = null;
+    cvmState.step = 1;
+    cvmState.confirmed = false;
+    document.getElementById('cvm_scan_view').hidden = true;
+    document.getElementById('cvm_wizard_view').hidden = false;
+    await loadMergePreview();
+    renderWizardStep();
+}
+
+async function loadMergePreview() {
+    if (!cvmState.primary || !cvmState.secondary) return;
+    try {
+        const result = await callApi('/character-merge/preview', {
+            primaryAvatar: cvmState.primary.avatarFileName,
+            secondaryAvatar: cvmState.secondary.avatarFileName,
+        });
+        if (!result?.ok) {
+            toastr.error(result?.error || t('characterMerge.scan.error'));
+            return;
+        }
+        cvmState.preview = result.preview;
+        cvmState.diff = result.diff;
+    } catch (error) {
+        toastr.error(String(error?.message || 'preview_failed'));
+    }
+}
+
+function exitMergeWizard() {
+    cvmState.primary = null;
+    cvmState.secondary = null;
+    cvmState.preview = null;
+    cvmState.diff = null;
+    cvmState.executeResult = null;
+    cvmState.step = 1;
+    cvmState.confirmed = false;
+    document.getElementById('cvm_scan_view').hidden = false;
+    document.getElementById('cvm_wizard_view').hidden = true;
+    refreshCharacterMergeGroups();
+}
+
+function renderWizardStep() {
+    const titleEl = document.getElementById('cvm_wizard_step_title');
+    const progressEl = document.getElementById('cvm_wizard_progress');
+    const contentEl = document.getElementById('cvm_wizard_content');
+    const backBtn = document.getElementById('cvm_wizard_back');
+    const nextBtn = document.getElementById('cvm_wizard_next');
+    const cancelBtn = document.getElementById('cvm_wizard_cancel');
+    if (!titleEl || !contentEl || !nextBtn || !backBtn || !cancelBtn) return;
+
+    const step = cvmState.step;
+    titleEl.textContent = t(`characterMerge.wizard.step${step}.title`);
+    progressEl.textContent = `${step} / 5`;
+
+    backBtn.hidden = (step <= 1 || step >= 4);
+    nextBtn.hidden = (step >= 4);
+    nextBtn.disabled = (step === 3 && !cvmState.confirmed);
+    cancelBtn.hidden = (step >= 5);
+    nextBtn.textContent = step === 3
+        ? t('characterMerge.wizard.startMerge')
+        : t('characterMerge.wizard.next');
+
+    if (step === 1) contentEl.innerHTML = renderWizardStep1();
+    else if (step === 2) contentEl.innerHTML = renderWizardStep2();
+    else if (step === 3) contentEl.innerHTML = renderWizardStep3();
+    else if (step === 4) contentEl.innerHTML = renderWizardStep4();
+    else if (step === 5) contentEl.innerHTML = renderWizardStep5();
+}
+
+function renderCandidateCardBlock(card, label) {
+    return `
+        <div class="cvm-candidate-card">
+            <div class="cvm-candidate-label">${cvmEscapeHtml(label)}</div>
+            <div class="cvm-candidate-filename"><code>${cvmEscapeHtml(card.avatarFileName)}</code>${card.isVaultImported ? ` <span class="cvt-badge" data-kind="info">${cvmEscapeHtml(t('characterMerge.card.vaultImported'))}</span>` : ''}</div>
+            <div class="cvm-candidate-row"><span>${cvmEscapeHtml(t('characterMerge.card.size'))}</span><span>${cvmFormatBytes(card.fileSizeBytes)}</span></div>
+            <div class="cvm-candidate-row"><span>${cvmEscapeHtml(t('characterMerge.card.modified'))}</span><span>${cvmEscapeHtml(cvmFormatTimestamp(card.modifiedAtMs))}</span></div>
+            <div class="cvm-candidate-row"><span>${cvmEscapeHtml(t('characterMerge.card.versionLabel'))}</span><span>${cvmEscapeHtml(card.characterVersion || '—')}</span></div>
+            <div class="cvm-candidate-row"><span>${cvmEscapeHtml(t('characterMerge.card.chatCountLabel'))}</span><span>${card.chatCount ?? 0}</span></div>
+            <div class="cvm-candidate-row"><span>${cvmEscapeHtml(t('characterMerge.card.backupCountLabel'))}</span><span>${card.vaultBackupCount ?? 0}</span></div>
+            <div class="cvm-candidate-row"><span>${cvmEscapeHtml(t('characterMerge.card.sourceLabel'))}</span><span>${cvmEscapeHtml(card.isVaultImported ? t('characterMerge.card.sourceCloud') : t('characterMerge.card.sourceLocal'))}</span></div>
+        </div>
+    `;
+}
+
+function renderWizardStep1() {
+    const p = cvmState.preview?.primary || cvmState.primary;
+    const s = cvmState.preview?.secondary || cvmState.secondary;
+    return `
+        <p class="cvt-note">${cvmEscapeHtml(t('characterMerge.wizard.step1.intro'))}</p>
+        <div class="cvm-card-pair">
+            ${renderCandidateCardBlock(p, 'A')}
+            ${renderCandidateCardBlock(s, 'B')}
+        </div>
+    `;
+}
+
+function renderWizardStep2() {
+    const diff = cvmState.diff;
+    if (!diff) return `<p class="cvt-note">${cvmEscapeHtml(t('common.loading'))}</p>`;
+    const rows = diff.fields.map((row) => {
+        const valueAStr = typeof row.valueA === 'object' ? JSON.stringify(row.valueA) : String(row.valueA ?? '');
+        const valueBStr = typeof row.valueB === 'object' ? JSON.stringify(row.valueB) : String(row.valueB ?? '');
+        const a = cvmTruncate(valueAStr, 200);
+        const b = cvmTruncate(valueBStr, 200);
+        const status = row.same ? t('characterMerge.diff.same') : t('characterMerge.diff.different');
+        return `
+            <div class="cvm-diff-row ${row.same ? 'cvm-diff-same' : 'cvm-diff-different'}">
+                <div class="cvm-diff-field"><code>${cvmEscapeHtml(row.field)}</code> <span class="cvt-badge" data-kind="${row.same ? 'idle' : 'info'}">${cvmEscapeHtml(status)}</span></div>
+                ${!row.same ? `<div class="cvm-diff-cell">A: ${cvmEscapeHtml(a) || '—'}</div><div class="cvm-diff-cell">B: ${cvmEscapeHtml(b) || '—'}</div>` : ''}
+            </div>
+        `;
+    }).join('');
+    const bookA = diff.characterBook.entryCountA;
+    const bookB = diff.characterBook.entryCountB;
+    const bookSame = diff.characterBook.same;
+    const bookRow = (bookA === 0 && bookB === 0) ? '' : `
+        <div class="cvm-diff-row ${bookSame ? 'cvm-diff-same' : 'cvm-diff-different'}">
+            <div class="cvm-diff-field"><code>character_book</code> <span class="cvt-badge" data-kind="${bookSame ? 'idle' : 'info'}">${cvmEscapeHtml(bookSame ? t('characterMerge.diff.same') : t('characterMerge.diff.different'))}</span></div>
+            ${!bookSame ? `<div class="cvm-diff-cell">${cvmEscapeHtml(t('characterMerge.diff.bookEntries', { count: bookA }))} (A) / ${cvmEscapeHtml(t('characterMerge.diff.bookEntries', { count: bookB }))} (B)</div>` : ''}
+        </div>
+    `;
+
+    const primary = cvmState.preview?.primary || cvmState.primary;
+    const secondary = cvmState.preview?.secondary || cvmState.secondary;
+    return `
+        <p class="cvt-note">${cvmEscapeHtml(t('characterMerge.wizard.step2.intro'))}</p>
+        <div class="cvm-diff-list">${rows}${bookRow}</div>
+        <div class="cvm-pick-keep cvt-card cvt-card-soft" style="margin-top:14px;">
+            <strong>${cvmEscapeHtml(t('characterMerge.wizard.step2.pickHeading'))}</strong>
+            <label class="cvm-pick-option"><input type="radio" name="cvm_pick" value="A" checked> ${cvmEscapeHtml(t('characterMerge.wizard.step2.pickA', { name: primary.avatarFileName }))}</label>
+            <label class="cvm-pick-option"><input type="radio" name="cvm_pick" value="B"> ${cvmEscapeHtml(t('characterMerge.wizard.step2.pickB', { name: secondary.avatarFileName }))}</label>
+            <p class="cvt-note">${cvmEscapeHtml(t('characterMerge.wizard.step2.note'))}</p>
+        </div>
+    `;
+}
+
+function renderWizardStep3() {
+    const preview = cvmState.preview;
+    if (!preview) return `<p class="cvt-note">${cvmEscapeHtml(t('common.loading'))}</p>`;
+    return `
+        <p class="cvt-note">${cvmEscapeHtml(t('characterMerge.wizard.step3.intro'))}</p>
+        <div class="cvm-preview-summary">
+            <div><strong>${cvmEscapeHtml(t('characterMerge.preview.finalAvatar'))}:</strong> <code>${cvmEscapeHtml(preview.finalAvatar)}</code></div>
+            <ul class="cvt-bullets">
+                <li>${cvmEscapeHtml(t('characterMerge.preview.chatsToMove', { count: preview.chatsToMove }))}</li>
+                <li>${cvmEscapeHtml(t('characterMerge.preview.vaultScopesToMerge', { count: preview.vaultScopesToMerge }))}</li>
+                <li>${cvmEscapeHtml(t('characterMerge.preview.groupRefsToRewrite', { count: preview.groupRefsToRewrite }))}</li>
+                <li>${cvmEscapeHtml(t('characterMerge.preview.personaConnectionRefsToRewrite', { count: preview.personaConnectionRefsToRewrite }))}</li>
+            </ul>
+            <p class="cvt-note">${cvmEscapeHtml(t('characterMerge.preview.backupNote'))}</p>
+            <p class="cvt-note cvt-note-strong">${cvmEscapeHtml(t('characterMerge.preview.refreshHint'))}</p>
+            <label class="cvm-confirm">
+                <input type="checkbox" id="cvm_confirm_checkbox" ${cvmState.confirmed ? 'checked' : ''}>
+                <span>${cvmEscapeHtml(t('characterMerge.preview.confirmLabel'))}</span>
+            </label>
+        </div>
+    `;
+}
+
+function renderWizardStep4() {
+    return `
+        <div class="cvm-execute">
+            <p class="cvt-note">${cvmEscapeHtml(t('characterMerge.execute.inProgress'))}</p>
+            <p class="cvt-note">${cvmEscapeHtml(t('characterMerge.execute.dontClose'))}</p>
+        </div>
+    `;
+}
+
+function renderWizardStep5() {
+    const r = cvmState.executeResult;
+    if (!r) return `<p class="cvt-note">${cvmEscapeHtml(t('common.loading'))}</p>`;
+    return `
+        <div class="cvm-complete">
+            <strong>${cvmEscapeHtml(t('characterMerge.wizard.step5.title'))}</strong>
+            <ul class="cvt-bullets">
+                <li>${cvmEscapeHtml(t('characterMerge.complete.chatsMoved', { count: r.chatsMoved ?? 0 }))}</li>
+                <li>${cvmEscapeHtml(t('characterMerge.complete.finalAvatar', { name: r.finalAvatar || '' }))}</li>
+            </ul>
+            <p class="cvt-note cvt-note-strong">${cvmEscapeHtml(t('characterMerge.complete.refreshHint'))}</p>
+            <div class="cvt-toolbar">
+                <button id="cvm_complete_back" type="button" class="menu_button">${cvmEscapeHtml(t('characterMerge.complete.backToList'))}</button>
+            </div>
+        </div>
+    `;
+}
+
+async function wizardStepNext() {
+    if (cvmState.busy) return;
+    const step = cvmState.step;
+
+    if (step === 1) {
+        cvmState.step = 2;
+        renderWizardStep();
+        return;
+    }
+
+    if (step === 2) {
+        const picked = document.querySelector('input[name="cvm_pick"]:checked')?.value;
+        if (picked === 'B') {
+            const tmp = cvmState.primary;
+            cvmState.primary = cvmState.secondary;
+            cvmState.secondary = tmp;
+            await loadMergePreview();
+        }
+        cvmState.step = 3;
+        renderWizardStep();
+        return;
+    }
+
+    if (step === 3) {
+        if (!cvmState.confirmed) return;
+        cvmState.step = 4;
+        renderWizardStep();
+        await runMergeExecution();
+    }
+}
+
+function wizardStepBack() {
+    if (cvmState.step > 1 && cvmState.step < 4) {
+        cvmState.step -= 1;
+        renderWizardStep();
+    }
+}
+
+async function runMergeExecution() {
+    cvmState.busy = true;
+    try {
+        const result = await callApi('/character-merge/execute', {
+            primaryAvatar: cvmState.primary.avatarFileName,
+            secondaryAvatar: cvmState.secondary.avatarFileName,
+        });
+        if (!result?.ok) {
+            toastr.error(result?.error || t('characterMerge.execute.failed'));
+            cvmState.step = 3;
+            renderWizardStep();
+            return;
+        }
+        cvmState.executeResult = result.result;
+        cvmState.step = 5;
+        renderWizardStep();
+    } catch (error) {
+        toastr.error(String(error?.message || t('characterMerge.execute.failed')));
+        cvmState.step = 3;
+        renderWizardStep();
+    } finally {
+        cvmState.busy = false;
+    }
+}
+
+async function rollbackPendingMergeAction() {
+    if (!window.confirm(t('characterMerge.pending.rollbackConfirm'))) return;
+    try {
+        const result = await callApi('/character-merge/rollback');
+        if (result?.ok) {
+            toastr.success(t('characterMerge.pending.rollbackOk'));
+        } else {
+            toastr.error(result?.error || 'rollback_failed');
+        }
+    } catch (error) {
+        toastr.error(String(error?.message || 'rollback_failed'));
+    }
+    await refreshCharacterMergeTab();
+}
+
+async function acknowledgePendingMergeAction() {
+    if (!window.confirm(t('characterMerge.pending.acknowledgeConfirm'))) return;
+    try {
+        await callApi('/character-merge/acknowledge');
+        toastr.success(t('characterMerge.pending.acknowledgeOk'));
+    } catch (error) {
+        toastr.error(String(error?.message || 'acknowledge_failed'));
+    }
+    await refreshCharacterMergeTab();
+}
+
 function attachDomListeners() {
     $(document).on('click', '#cvt_open_panel_sidebar', () => {
         openPanel('chat');
@@ -2918,6 +3394,32 @@ function attachDomListeners() {
             await refreshCloudStatus({ quiet: true });
             await refreshCloudScopes({ quiet: true });
         }
+
+        if (tabName === 'character-merge') {
+            await refreshCharacterMergeTab();
+        }
+    });
+
+    $(document).on('click', '#cvm_refresh', async () => {
+        await refreshCharacterMergeTab();
+    });
+
+    $(document).on('click', '.cvm-start-merge', async function () {
+        const name = this.dataset.characterName;
+        if (!name) return;
+        await startMergeForGroup(name);
+    });
+
+    $(document).on('click', '#cvm_wizard_next', () => { wizardStepNext(); });
+    $(document).on('click', '#cvm_wizard_back', () => { wizardStepBack(); });
+    $(document).on('click', '#cvm_wizard_cancel', () => { exitMergeWizard(); });
+    $(document).on('click', '#cvm_complete_back', () => { exitMergeWizard(); });
+    $(document).on('click', '#cvm_pending_rollback', () => { rollbackPendingMergeAction(); });
+    $(document).on('click', '#cvm_pending_acknowledge', () => { acknowledgePendingMergeAction(); });
+    $(document).on('change', '#cvm_confirm_checkbox', function () {
+        cvmState.confirmed = this.checked;
+        const nextBtn = document.getElementById('cvm_wizard_next');
+        if (nextBtn) nextBtn.disabled = !cvmState.confirmed;
     });
 
     $(document).on('click', '.cvt-theme-btn', function () {
