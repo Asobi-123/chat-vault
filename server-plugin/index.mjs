@@ -3606,6 +3606,576 @@ function importCloudSnapshotIntoLocal(baseDirectory, meta, snapshot) {
     };
 }
 
+// === Character merge: scanning, diff, preview (read-only) ===
+//
+// Powers the chat-vault "Character Card Merge" tab. Detects local character
+// cards that share the same chara_card name but differ by bytes, lets the UI
+// surface a side-by-side diff, and produces a structured preview of the
+// on-disk impact a merge would have. Write operations (execute, resume,
+// rollback) live in the next section.
+
+function getCharacterAvatarBaseName(avatarFileName) {
+    return path.parse(asString(avatarFileName).trim()).name;
+}
+
+function detectVaultImportSuffix(avatarFileName) {
+    return /__vault_[0-9a-f]{8}\.png$/i.test(asString(avatarFileName).trim());
+}
+
+function extractCharaData(chara) {
+    if (!chara || typeof chara !== 'object') {
+        return {};
+    }
+    const isV2 = asString(chara.spec).trim() === 'chara_card_v2';
+    return isV2 ? asObject(chara.data) : chara;
+}
+
+function countAvatarChatJsonl(directories, avatarFileName) {
+    const chatsRoot = directories && directories.chats;
+    if (!chatsRoot) {
+        return 0;
+    }
+    const baseName = getCharacterAvatarBaseName(avatarFileName);
+    if (!baseName) {
+        return 0;
+    }
+    const chatDir = path.join(chatsRoot, baseName);
+    if (!fs.existsSync(chatDir)) {
+        return 0;
+    }
+    try {
+        return fs.readdirSync(chatDir)
+            .filter((name) => name.toLowerCase().endsWith('.jsonl'))
+            .length;
+    } catch {
+        return 0;
+    }
+}
+
+function countAvatarVaultBackups(baseDirectory, avatarFileName) {
+    const scopesRoot = path.join(baseDirectory, 'scopes');
+    if (!fs.existsSync(scopesRoot)) {
+        return 0;
+    }
+    let count = 0;
+    for (const scopeDir of listScopeDirectories(scopesRoot)) {
+        const index = readJson(path.join(scopeDir, INDEX_FILE_NAME), null);
+        if (!index) {
+            continue;
+        }
+        const source = asObject(index.source);
+        if (asString(source.avatarUrl).trim() !== asString(avatarFileName).trim()) {
+            continue;
+        }
+        count += asArray(index.entries).length;
+    }
+    return count;
+}
+
+function countAvatarVaultScopes(baseDirectory, avatarFileName) {
+    const scopesRoot = path.join(baseDirectory, 'scopes');
+    if (!fs.existsSync(scopesRoot)) {
+        return 0;
+    }
+    let count = 0;
+    for (const scopeDir of listScopeDirectories(scopesRoot)) {
+        const index = readJson(path.join(scopeDir, INDEX_FILE_NAME), null);
+        if (!index) {
+            continue;
+        }
+        const source = asObject(index.source);
+        if (asString(source.avatarUrl).trim() === asString(avatarFileName).trim()) {
+            count += 1;
+        }
+    }
+    return count;
+}
+
+function countAvatarGroupRefs(directories, avatarFileName) {
+    const groupsDir = directories && directories.groups;
+    if (!groupsDir || !fs.existsSync(groupsDir)) {
+        return 0;
+    }
+    let count = 0;
+    for (const fileName of fs.readdirSync(groupsDir)) {
+        if (!fileName.toLowerCase().endsWith('.json')) {
+            continue;
+        }
+        try {
+            const data = readJson(path.join(groupsDir, fileName), null);
+            if (!data || !Array.isArray(data.members)) {
+                continue;
+            }
+            if (data.members.includes(avatarFileName)) {
+                count += 1;
+            }
+        } catch (error) {
+            // best-effort scan; ignore unreadable groups
+        }
+    }
+    return count;
+}
+
+function countAvatarPersonaConnectionRefs(directories, avatarFileName) {
+    const settingsPath = directories && directories.root
+        ? path.join(directories.root, 'settings.json')
+        : null;
+    if (!settingsPath || !fs.existsSync(settingsPath)) {
+        return 0;
+    }
+    try {
+        const text = fs.readFileSync(settingsPath, 'utf-8');
+        const escaped = avatarFileName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const matches = text.match(new RegExp(escaped, 'g'));
+        return matches ? matches.length : 0;
+    } catch {
+        return 0;
+    }
+}
+
+function scanLocalCharacterCard(directories, avatarFileName) {
+    const filePath = path.join(directories.characters, avatarFileName);
+    if (!fs.existsSync(filePath)) {
+        return null;
+    }
+    const stat = fs.statSync(filePath);
+    const buffer = fs.readFileSync(filePath);
+    const charaText = extractPngCharaChunk(buffer);
+    const chara = charaText ? parseCharaJson(charaText) : null;
+    const charaData = chara ? extractCharaData(chara) : null;
+    return {
+        avatarFileName,
+        fileSizeBytes: stat.size,
+        modifiedAtMs: stat.mtimeMs,
+        chara,
+        characterName: charaData ? asString(charaData.name).trim() : '',
+        characterVersion: charaData ? asString(charaData.character_version).trim() : '',
+        charaFingerprint: characterDefinitionFingerprint(buffer),
+        isVaultImported: detectVaultImportSuffix(avatarFileName),
+    };
+}
+
+function listAllLocalCharacterCards(directories) {
+    if (!directories || !directories.characters || !fs.existsSync(directories.characters)) {
+        return [];
+    }
+    const entries = fs.readdirSync(directories.characters, { withFileTypes: true });
+    const cards = [];
+    for (const entry of entries) {
+        if (!entry.isFile()) {
+            continue;
+        }
+        if (path.extname(entry.name).toLowerCase() !== '.png') {
+            continue;
+        }
+        const card = scanLocalCharacterCard(directories, entry.name);
+        if (card) {
+            cards.push(card);
+        }
+    }
+    return cards;
+}
+
+function findDuplicateCharacterGroups(directories) {
+    const cards = listAllLocalCharacterCards(directories);
+    const byName = new Map();
+    for (const card of cards) {
+        if (!card.characterName) {
+            continue;
+        }
+        const list = byName.get(card.characterName) || [];
+        list.push(card);
+        byName.set(card.characterName, list);
+    }
+    const groups = [];
+    for (const [name, list] of byName) {
+        if (list.length < 2) {
+            continue;
+        }
+        list.sort((left, right) => {
+            if (left.isVaultImported !== right.isVaultImported) {
+                return left.isVaultImported ? 1 : -1;
+            }
+            return right.modifiedAtMs - left.modifiedAtMs;
+        });
+        groups.push({ characterName: name, cards: list });
+    }
+    groups.sort((left, right) => left.characterName.localeCompare(right.characterName));
+    return groups;
+}
+
+function inspectCharacterCard(baseDirectory, directories, avatarFileName) {
+    const card = scanLocalCharacterCard(directories, avatarFileName);
+    if (!card) {
+        return null;
+    }
+    return {
+        ...card,
+        chatCount: countAvatarChatJsonl(directories, avatarFileName),
+        vaultBackupCount: countAvatarVaultBackups(baseDirectory, avatarFileName),
+    };
+}
+
+const CHARA_DIFF_FIELDS = [
+    'name',
+    'description',
+    'personality',
+    'first_mes',
+    'scenario',
+    'mes_example',
+    'system_prompt',
+    'post_history_instructions',
+    'alternate_greetings',
+    'creator',
+    'creator_notes',
+    'character_version',
+    'tags',
+];
+
+function diffCharacterDefinitions(charaA, charaB) {
+    const dataA = extractCharaData(charaA);
+    const dataB = extractCharaData(charaB);
+    const fields = CHARA_DIFF_FIELDS.map((field) => {
+        const valueA = dataA[field];
+        const valueB = dataB[field];
+        const same = stableStringify(valueA) === stableStringify(valueB);
+        return { field, same, valueA, valueB };
+    });
+    const bookA = dataA.character_book || null;
+    const bookB = dataB.character_book || null;
+    const characterBook = {
+        same: stableStringify(bookA) === stableStringify(bookB),
+        entryCountA: bookA && Array.isArray(bookA.entries) ? bookA.entries.length : 0,
+        entryCountB: bookB && Array.isArray(bookB.entries) ? bookB.entries.length : 0,
+    };
+    return { fields, characterBook };
+}
+
+function computeFinalAvatarName(primaryAvatarFileName) {
+    const normalized = asString(primaryAvatarFileName).trim();
+    return normalized.replace(/__vault_[0-9a-f]{8}\.png$/i, '.png');
+}
+
+function previewCharacterMerge(baseDirectory, directories, primaryAvatar, secondaryAvatar) {
+    const primary = inspectCharacterCard(baseDirectory, directories, primaryAvatar);
+    const secondary = inspectCharacterCard(baseDirectory, directories, secondaryAvatar);
+    if (!primary || !secondary) {
+        throw new Error('character_card_not_found');
+    }
+    const finalAvatar = computeFinalAvatarName(primaryAvatar);
+    const primaryWillRename = finalAvatar !== primaryAvatar;
+    return {
+        primary,
+        secondary,
+        finalAvatar,
+        primaryWillRename,
+        chatsToMove: secondary.chatCount,
+        vaultScopesToMerge: countAvatarVaultScopes(baseDirectory, secondaryAvatar),
+        groupRefsToRewrite:
+            countAvatarGroupRefs(directories, secondaryAvatar)
+            + (primaryWillRename ? countAvatarGroupRefs(directories, primaryAvatar) : 0),
+        personaConnectionRefsToRewrite:
+            countAvatarPersonaConnectionRefs(directories, secondaryAvatar)
+            + (primaryWillRename ? countAvatarPersonaConnectionRefs(directories, primaryAvatar) : 0),
+    };
+}
+
+// === Character merge: execution (write side) ===
+
+function rewriteGroupAvatarRefs(directories, oldAvatar, newAvatar) {
+    if (!directories || !directories.groups || !fs.existsSync(directories.groups)) {
+        return 0;
+    }
+    if (oldAvatar === newAvatar) {
+        return 0;
+    }
+    let rewritten = 0;
+    for (const fileName of fs.readdirSync(directories.groups)) {
+        if (!fileName.toLowerCase().endsWith('.json')) {
+            continue;
+        }
+        const filePath = path.join(directories.groups, fileName);
+        const data = readJson(filePath, null);
+        if (!data || !Array.isArray(data.members)) {
+            continue;
+        }
+        let modified = false;
+        const next = data.members.map((member) => {
+            if (member === oldAvatar) {
+                modified = true;
+                return newAvatar;
+            }
+            return member;
+        });
+        if (modified) {
+            data.members = next;
+            writeJsonAtomic(filePath, data);
+            rewritten += 1;
+        }
+    }
+    return rewritten;
+}
+
+function rewriteSettingsAvatarRefs(directories, oldAvatar, newAvatar) {
+    const settingsPath = directories && directories.root
+        ? path.join(directories.root, 'settings.json')
+        : null;
+    if (!settingsPath || !fs.existsSync(settingsPath) || oldAvatar === newAvatar) {
+        return 0;
+    }
+    try {
+        const text = fs.readFileSync(settingsPath, 'utf-8');
+        const oldJson = JSON.stringify(oldAvatar);
+        const newJson = JSON.stringify(newAvatar);
+        const escaped = oldJson.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const regex = new RegExp(escaped, 'g');
+        const matches = text.match(regex);
+        if (!matches) {
+            return 0;
+        }
+        writeTextAtomic(settingsPath, text.replace(regex, newJson));
+        return matches.length;
+    } catch (error) {
+        console.warn('[chat-vault] settings.json avatar rewrite failed:', error);
+        return 0;
+    }
+}
+
+function rewriteVaultScopeAvatarRefs(baseDirectory, oldAvatar, newAvatar) {
+    if (oldAvatar === newAvatar) {
+        return 0;
+    }
+    const scopesRoot = path.join(baseDirectory, 'scopes');
+    if (!fs.existsSync(scopesRoot)) {
+        return 0;
+    }
+    let rewritten = 0;
+    for (const scopeDir of listScopeDirectories(scopesRoot)) {
+        const indexPath = path.join(scopeDir, INDEX_FILE_NAME);
+        const index = readJson(indexPath, null);
+        if (!index) {
+            continue;
+        }
+        const source = asObject(index.source);
+        if (asString(source.avatarUrl).trim() !== oldAvatar) {
+            continue;
+        }
+        source.avatarUrl = newAvatar;
+        index.source = source;
+        writeJsonAtomic(indexPath, index);
+        rewritten += 1;
+    }
+    return rewritten;
+}
+
+function moveJsonlFiles(srcDir, dstDir) {
+    if (!fs.existsSync(srcDir)) {
+        return { moved: 0, renamedDueToConflict: 0 };
+    }
+    ensureDirectory(dstDir);
+    let moved = 0;
+    let renamedDueToConflict = 0;
+    for (const file of fs.readdirSync(srcDir)) {
+        if (!file.toLowerCase().endsWith('.jsonl')) {
+            continue;
+        }
+        const src = path.join(srcDir, file);
+        const dst = path.join(dstDir, file);
+        if (fs.existsSync(dst)) {
+            const renamed = file.replace(/\.jsonl$/i, `__merged_${Date.now()}_${moved}.jsonl`);
+            fs.renameSync(src, path.join(dstDir, renamed));
+            renamedDueToConflict += 1;
+        } else {
+            fs.renameSync(src, dst);
+        }
+        moved += 1;
+    }
+    return { moved, renamedDueToConflict };
+}
+
+function removeDirIfEmpty(dirPath) {
+    try {
+        if (!fs.existsSync(dirPath)) {
+            return;
+        }
+        const remaining = fs.readdirSync(dirPath);
+        if (remaining.length === 0) {
+            fs.rmdirSync(dirPath);
+        }
+    } catch (error) {
+        // best-effort cleanup; non-fatal
+    }
+}
+
+async function executeCharacterMerge(baseDirectory, directories, primaryAvatar, secondaryAvatar) {
+    if (readPendingMerge(baseDirectory)) {
+        throw new Error('pending_merge_exists');
+    }
+    if (!primaryAvatar || !secondaryAvatar || primaryAvatar === secondaryAvatar) {
+        throw new Error('primary_and_secondary_must_differ');
+    }
+
+    const primaryPngPath = path.join(directories.characters, primaryAvatar);
+    const secondaryPngPath = path.join(directories.characters, secondaryAvatar);
+    if (!fs.existsSync(primaryPngPath)) {
+        throw new Error('primary_card_not_found');
+    }
+    if (!fs.existsSync(secondaryPngPath)) {
+        throw new Error('secondary_card_not_found');
+    }
+
+    const finalAvatar = computeFinalAvatarName(primaryAvatar);
+    const primaryBaseName = getCharacterAvatarBaseName(primaryAvatar);
+    const secondaryBaseName = getCharacterAvatarBaseName(secondaryAvatar);
+    const finalBaseName = getCharacterAvatarBaseName(finalAvatar);
+    const primaryWillRename = finalAvatar !== primaryAvatar;
+    const finalPngPath = path.join(directories.characters, finalAvatar);
+
+    const { mergeId, dir: mergeBackupDir } = createMergeBackupDirectory(baseDirectory);
+    fs.copyFileSync(primaryPngPath, path.join(mergeBackupDir, 'primary-original.png'));
+    fs.copyFileSync(secondaryPngPath, path.join(mergeBackupDir, 'secondary-original.png'));
+
+    const pending = {
+        version: 1,
+        mergeId,
+        startedAt: Date.now(),
+        mergeBackupDir: path.relative(baseDirectory, mergeBackupDir).replace(/\\/g, '/'),
+        primary: { avatar: primaryAvatar, baseName: primaryBaseName },
+        secondary: { avatar: secondaryAvatar, baseName: secondaryBaseName },
+        final: { avatar: finalAvatar, baseName: finalBaseName },
+        primaryWillRename,
+        completedSteps: ['archive_originals'],
+    };
+    writePendingMerge(baseDirectory, pending);
+
+    // Overwrite primary PNG bytes with secondary content (the user chose to
+    // keep secondary's card definition).
+    fs.copyFileSync(secondaryPngPath, primaryPngPath);
+    pending.completedSteps.push('overwrite_primary_png');
+    writePendingMerge(baseDirectory, pending);
+
+    // Rename primary to final if primary's filename had a __vault_xxx suffix.
+    if (primaryWillRename) {
+        if (fs.existsSync(finalPngPath) && finalPngPath !== secondaryPngPath) {
+            fs.unlinkSync(finalPngPath);
+        }
+        fs.renameSync(primaryPngPath, finalPngPath);
+
+        if (directories.chats) {
+            const primaryChatsDir = path.join(directories.chats, primaryBaseName);
+            const finalChatsDir = path.join(directories.chats, finalBaseName);
+            if (fs.existsSync(primaryChatsDir) && primaryChatsDir !== finalChatsDir) {
+                if (fs.existsSync(finalChatsDir)) {
+                    moveJsonlFiles(primaryChatsDir, finalChatsDir);
+                } else {
+                    fs.renameSync(primaryChatsDir, finalChatsDir);
+                }
+                removeDirIfEmpty(primaryChatsDir);
+            }
+        }
+    }
+    pending.completedSteps.push('rename_to_final');
+    writePendingMerge(baseDirectory, pending);
+
+    // Move secondary's chats into final's chats directory.
+    let secondaryChatMove = { moved: 0, renamedDueToConflict: 0 };
+    if (directories.chats) {
+        const secondaryChatsDir = path.join(directories.chats, secondaryBaseName);
+        const finalChatsDir = path.join(directories.chats, finalBaseName);
+        if (fs.existsSync(secondaryChatsDir) && secondaryChatsDir !== finalChatsDir) {
+            secondaryChatMove = moveJsonlFiles(secondaryChatsDir, finalChatsDir);
+            removeDirIfEmpty(secondaryChatsDir);
+        }
+    }
+    pending.completedSteps.push('move_secondary_chats');
+    pending.secondaryChatMove = secondaryChatMove;
+    writePendingMerge(baseDirectory, pending);
+
+    // Delete the secondary PNG if it still exists (it wouldn't if rename
+    // happened to overwrite it, but defensive).
+    if (secondaryPngPath !== finalPngPath && fs.existsSync(secondaryPngPath)) {
+        fs.unlinkSync(secondaryPngPath);
+    }
+    pending.completedSteps.push('remove_secondary_png');
+    writePendingMerge(baseDirectory, pending);
+
+    // Rewrite avatar refs in groups, settings, and chat-vault scopes.
+    const groupRefsRewritten =
+        rewriteGroupAvatarRefs(directories, secondaryAvatar, finalAvatar)
+        + (primaryWillRename ? rewriteGroupAvatarRefs(directories, primaryAvatar, finalAvatar) : 0);
+    const settingsRefsRewritten =
+        rewriteSettingsAvatarRefs(directories, secondaryAvatar, finalAvatar)
+        + (primaryWillRename ? rewriteSettingsAvatarRefs(directories, primaryAvatar, finalAvatar) : 0);
+    const vaultScopesRewritten =
+        rewriteVaultScopeAvatarRefs(baseDirectory, secondaryAvatar, finalAvatar)
+        + (primaryWillRename ? rewriteVaultScopeAvatarRefs(baseDirectory, primaryAvatar, finalAvatar) : 0);
+    pending.completedSteps.push('rewrite_refs');
+    pending.refsRewritten = { groups: groupRefsRewritten, settings: settingsRefsRewritten, vaultScopes: vaultScopesRewritten };
+    writePendingMerge(baseDirectory, pending);
+
+    finalizeMergeBackup(baseDirectory, mergeBackupDir, 'completed');
+
+    return {
+        mergeId,
+        finalAvatar,
+        chatsMoved: secondaryChatMove.moved,
+        chatsRenamedDueToConflict: secondaryChatMove.renamedDueToConflict,
+        refsRewritten: pending.refsRewritten,
+    };
+}
+
+// Minimal rollback: restores both original PNGs from merge-backup. Does NOT
+// attempt to split apart already-merged chats — those stay together under the
+// final avatar's name. If the user needs a complete revert they can copy
+// individual jsonl files out of the merge-backup directory manually.
+async function rollbackPendingMerge(baseDirectory, directories) {
+    const pending = readPendingMerge(baseDirectory);
+    if (!pending) {
+        throw new Error('no_pending_merge');
+    }
+    const mergeBackupDirRelative = asString(pending.mergeBackupDir).trim();
+    if (!mergeBackupDirRelative) {
+        clearPendingMerge(baseDirectory);
+        throw new Error('pending_merge_invalid');
+    }
+    const mergeBackupDir = path.join(baseDirectory, mergeBackupDirRelative);
+    const primaryAvatar = asString(pending.primary?.avatar).trim();
+    const secondaryAvatar = asString(pending.secondary?.avatar).trim();
+    const finalAvatar = asString(pending.final?.avatar).trim() || primaryAvatar;
+
+    const primaryBackupPath = path.join(mergeBackupDir, 'primary-original.png');
+    const secondaryBackupPath = path.join(mergeBackupDir, 'secondary-original.png');
+
+    if (fs.existsSync(primaryBackupPath) && primaryAvatar) {
+        const targetPath = path.join(directories.characters, primaryAvatar);
+        const finalPngPath = path.join(directories.characters, finalAvatar);
+        if (finalPngPath !== targetPath && fs.existsSync(finalPngPath)) {
+            fs.unlinkSync(finalPngPath);
+        }
+        const buffer = fs.readFileSync(primaryBackupPath);
+        writeBufferAtomic(targetPath, buffer);
+    }
+
+    if (fs.existsSync(secondaryBackupPath) && secondaryAvatar) {
+        const targetPath = path.join(directories.characters, secondaryAvatar);
+        if (!fs.existsSync(targetPath)) {
+            const buffer = fs.readFileSync(secondaryBackupPath);
+            writeBufferAtomic(targetPath, buffer);
+        }
+    }
+
+    rewriteGroupAvatarRefs(directories, finalAvatar, primaryAvatar);
+    rewriteSettingsAvatarRefs(directories, finalAvatar, primaryAvatar);
+    rewriteVaultScopeAvatarRefs(baseDirectory, finalAvatar, primaryAvatar);
+
+    finalizeMergeBackup(baseDirectory, mergeBackupDir, 'rolled-back');
+
+    return {
+        mergeId: asString(pending.mergeId).trim(),
+        outcome: 'rolled-back',
+    };
+}
+
 export async function init(router) {
     router.use(express.json({ limit: MAX_REQUEST_SIZE }));
 
@@ -4308,6 +4878,141 @@ export async function init(router) {
                 ? 400
                 : (['cloud_snapshot_not_found', 'cloud_snapshot_meta_not_found'].includes(errorKey) ? 404 : 500);
             return response.status(statusCode).send({ ok: false, error: 'failed_to_delete_cloud_snapshot', detail: error.message });
+        }
+    });
+
+    // === Character merge routes (0.3.0+) ===
+
+    router.post('/character-merge/duplicates', (request, response) => {
+        if (!assertUser(request, response)) {
+            return;
+        }
+
+        try {
+            const groups = findDuplicateCharacterGroups(request.user.directories);
+            return response.send({
+                ok: true,
+                groups,
+            });
+        } catch (error) {
+            console.error('[chat-vault] Failed to scan character duplicates:', error);
+            return response.status(500).send({ ok: false, error: 'failed_to_scan_character_duplicates', detail: error.message });
+        }
+    });
+
+    router.post('/character-merge/preview', (request, response) => {
+        if (!assertUser(request, response)) {
+            return;
+        }
+
+        try {
+            const primaryAvatar = asString(request.body?.primaryAvatar).trim();
+            const secondaryAvatar = asString(request.body?.secondaryAvatar).trim();
+            if (!primaryAvatar || !secondaryAvatar) {
+                return response.status(400).send({ ok: false, error: 'primaryAvatar_and_secondaryAvatar_are_required' });
+            }
+            const baseDirectory = getBaseDirectory(request);
+            const preview = previewCharacterMerge(baseDirectory, request.user.directories, primaryAvatar, secondaryAvatar);
+            const diff = diffCharacterDefinitions(preview.primary.chara, preview.secondary.chara);
+            return response.send({
+                ok: true,
+                preview,
+                diff,
+            });
+        } catch (error) {
+            console.error('[chat-vault] Failed to preview character merge:', error);
+            const errorKey = asString(error.message).trim();
+            const statusCode = errorKey === 'character_card_not_found' ? 404 : 500;
+            return response.status(statusCode).send({ ok: false, error: errorKey || 'failed_to_preview_character_merge', detail: error.message });
+        }
+    });
+
+    router.post('/character-merge/execute', async (request, response) => {
+        if (!assertUser(request, response)) {
+            return;
+        }
+
+        try {
+            const primaryAvatar = asString(request.body?.primaryAvatar).trim();
+            const secondaryAvatar = asString(request.body?.secondaryAvatar).trim();
+            if (!primaryAvatar || !secondaryAvatar) {
+                return response.status(400).send({ ok: false, error: 'primaryAvatar_and_secondaryAvatar_are_required' });
+            }
+            const baseDirectory = getBaseDirectory(request);
+            const result = await executeCharacterMerge(baseDirectory, request.user.directories, primaryAvatar, secondaryAvatar);
+            return response.send({
+                ok: true,
+                result,
+            });
+        } catch (error) {
+            console.error('[chat-vault] Failed to execute character merge:', error);
+            const errorKey = asString(error.message).trim();
+            const knownErrors = [
+                'pending_merge_exists',
+                'primary_and_secondary_must_differ',
+                'primary_card_not_found',
+                'secondary_card_not_found',
+            ];
+            const statusCode = knownErrors.includes(errorKey) ? 400 : 500;
+            return response.status(statusCode).send({ ok: false, error: errorKey || 'failed_to_execute_character_merge', detail: error.message });
+        }
+    });
+
+    router.post('/character-merge/pending', (request, response) => {
+        if (!assertUser(request, response)) {
+            return;
+        }
+
+        try {
+            const baseDirectory = getBaseDirectory(request);
+            const pending = readPendingMerge(baseDirectory);
+            const recentBackups = listMergeBackups(baseDirectory).slice(0, MERGE_BACKUP_RETENTION);
+            return response.send({
+                ok: true,
+                pending,
+                recentBackups,
+            });
+        } catch (error) {
+            console.error('[chat-vault] Failed to read pending merge:', error);
+            return response.status(500).send({ ok: false, error: 'failed_to_read_pending_merge', detail: error.message });
+        }
+    });
+
+    router.post('/character-merge/rollback', async (request, response) => {
+        if (!assertUser(request, response)) {
+            return;
+        }
+
+        try {
+            const baseDirectory = getBaseDirectory(request);
+            const result = await rollbackPendingMerge(baseDirectory, request.user.directories);
+            return response.send({
+                ok: true,
+                result,
+            });
+        } catch (error) {
+            console.error('[chat-vault] Failed to roll back merge:', error);
+            const errorKey = asString(error.message).trim();
+            const statusCode = errorKey === 'no_pending_merge' ? 404 : 500;
+            return response.status(statusCode).send({ ok: false, error: errorKey || 'failed_to_roll_back_merge', detail: error.message });
+        }
+    });
+
+    router.post('/character-merge/acknowledge', (request, response) => {
+        if (!assertUser(request, response)) {
+            return;
+        }
+
+        try {
+            const baseDirectory = getBaseDirectory(request);
+            clearPendingMerge(baseDirectory);
+            return response.send({
+                ok: true,
+                cleared: true,
+            });
+        } catch (error) {
+            console.error('[chat-vault] Failed to acknowledge pending merge:', error);
+            return response.status(500).send({ ok: false, error: 'failed_to_acknowledge_pending_merge', detail: error.message });
         }
     });
 }
