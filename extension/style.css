@@ -657,6 +657,14 @@
 
 /* === Character merge (0.3.0+) === */
 
+/* Override .cvm-view default display and .cvt-toolbar inherited flex so the
+ * HTML `hidden` attribute actually hides the element. Without these,
+ * `display: block` / `display: flex` set on the class win over [hidden]. */
+.cvm-view[hidden],
+.cvm-wizard-actions[hidden] {
+    display: none !important;
+}
+
 .cvm-view {
     display: block;
 }

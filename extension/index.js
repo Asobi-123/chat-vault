@@ -837,7 +837,13 @@ function ensureSettings() {
             ? stored.collapsedSections
             : {},
     };
-    return extension_settings[SETTINGS_KEY];
+    // Sections that should be collapsed by default on first visit. The user
+    // can still expand them; once expanded, the saved value (false) wins.
+    const settings = extension_settings[SETTINGS_KEY];
+    if (settings.collapsedSections.cm_archives === undefined) {
+        settings.collapsedSections.cm_archives = true;
+    }
+    return settings;
 }
 
 function getSettings() {
