@@ -294,5 +294,16 @@
   "characterMerge.pending.rollbackConfirm": "回滚这次未完成的合并？会从 merge-backup 恢复原始 PNG。已经合并过来的聊天保持原状。",
   "characterMerge.pending.acknowledgeConfirm": "清掉「未完成合并」标记？只有你自己已经处理过状态时才点这个。",
   "characterMerge.pending.rollbackOk": "原始 PNG 已从 merge-backup 恢复。",
-  "characterMerge.pending.acknowledgeOk": "未完成合并的标记已清掉。"
+  "characterMerge.pending.acknowledgeOk": "未完成合并的标记已清掉。",
+
+  "characterMerge.archives.heading": "最近合并归档",
+  "characterMerge.archives.intro": "最近几次合并的原始 PNG 都归档在这里。如果你后悔某次保留的选择，可以回滚。已经合并到主卡的聊天会保持合并状态——只恢复卡和引用。",
+  "characterMerge.archives.empty": "暂无可回滚的已完成合并。",
+  "characterMerge.archives.mergedAt": "合并于 {time}",
+  "characterMerge.archives.kept": "保留",
+  "characterMerge.archives.removed": "合并掉",
+  "characterMerge.archives.finalName": "最终文件名",
+  "characterMerge.archives.rollback": "回滚这次合并",
+  "characterMerge.archives.rollbackConfirm": "从归档恢复两张原始 PNG？重要：合并到主卡的聊天会保持合并状态（无法按来源拆分），群组 / persona 引用会回退到原保留卡的文件名——原本指向被合并卡的引用需要手动重新指向。当前合并后的 PNG 会保存为归档文件夹里的 post-merge-snapshot.png，方便之后重做。",
+  "characterMerge.archives.rollbackOk": "原始 PNG 已恢复。刷新酒馆页面查看变更。"
 }

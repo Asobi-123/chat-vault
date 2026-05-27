@@ -411,6 +411,19 @@ function buildPanelHtml() {
                                 </div>
                             </div>
                         </div>
+
+                        <div class="cvt-card">
+                            <div class="cvt-section-head">
+                                <strong>${t('characterMerge.archives.heading')}</strong>
+                                <div class="cvt-section-head-actions">${buildSectionToggle('cm_archives')}</div>
+                            </div>
+                            <div class="${getCardBodyClass('cm_archives')}" data-cvt-section="cm_archives">
+                                <p class="cvt-note">${t('characterMerge.archives.intro')}</p>
+                                <div id="cvm_archives_list" class="cvt-list">
+                                    <div class="cvt-empty">${t('common.loading')}</div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
 
                     <div id="cvm_wizard_view" class="cvm-view" hidden>
@@ -3017,20 +3030,77 @@ async function refreshCharacterMergePending() {
     if (!banner || !detail) return;
     try {
         const result = await callApi('/character-merge/pending');
-        if (result?.ok && result.pending) {
-            const p = result.pending;
-            detail.textContent = t('characterMerge.pending.summary', {
-                start: cvmFormatTimestamp(p.startedAt),
-                mergeId: p.mergeId || '?',
-                completed: (p.completedSteps || []).join(', ') || '—',
-            });
-            banner.hidden = false;
+        if (result?.ok) {
+            if (result.pending) {
+                const p = result.pending;
+                detail.textContent = t('characterMerge.pending.summary', {
+                    start: cvmFormatTimestamp(p.startedAt),
+                    mergeId: p.mergeId || '?',
+                    completed: (p.completedSteps || []).join(', ') || '—',
+                });
+                banner.hidden = false;
+            } else {
+                banner.hidden = true;
+            }
+            renderArchivesList(result.recentBackups || []);
             return;
         }
     } catch (error) {
         console.warn('[chat-vault] pending merge check failed', error);
     }
     banner.hidden = true;
+    renderArchivesList([]);
+}
+
+function renderArchivesList(backups) {
+    const list = document.getElementById('cvm_archives_list');
+    if (!list) return;
+    const visible = (backups || []).filter((b) => {
+        if (!b.info || typeof b.info !== 'object') return false;
+        const outcome = String(b.info.outcome || '').trim();
+        return outcome === 'completed';
+    });
+    if (!visible.length) {
+        list.innerHTML = `<div class="cvt-empty">${cvmEscapeHtml(t('characterMerge.archives.empty'))}</div>`;
+        return;
+    }
+    list.innerHTML = visible.map((backup) => {
+        const i = backup.info;
+        const completedAt = cvmFormatTimestamp(i.completedAt);
+        const primary = String(i.primary?.avatar || '');
+        const secondary = String(i.secondary?.avatar || '');
+        const final = String(i.final?.avatar || '');
+        return `
+            <div class="cvm-archive-row">
+                <div class="cvm-archive-meta">
+                    <div class="cvm-archive-time">${cvmEscapeHtml(t('characterMerge.archives.mergedAt', { time: completedAt }))}</div>
+                    <div class="cvt-note">
+                        <div>${cvmEscapeHtml(t('characterMerge.archives.kept'))}: <code>${cvmEscapeHtml(primary)}</code></div>
+                        <div>${cvmEscapeHtml(t('characterMerge.archives.removed'))}: <code>${cvmEscapeHtml(secondary)}</code></div>
+                        <div>${cvmEscapeHtml(t('characterMerge.archives.finalName'))}: <code>${cvmEscapeHtml(final)}</code></div>
+                    </div>
+                </div>
+                <div class="cvt-toolbar cvm-archive-actions">
+                    <button type="button" class="menu_button cvm-rollback-archive" data-merge-id="${cvmEscapeHtml(backup.mergeId)}">${cvmEscapeHtml(t('characterMerge.archives.rollback'))}</button>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+async function rollbackCompletedMergeArchive(mergeId) {
+    if (!window.confirm(t('characterMerge.archives.rollbackConfirm'))) return;
+    try {
+        const result = await callApi('/character-merge/rollback-archive', { mergeId });
+        if (result?.ok) {
+            toastr.success(t('characterMerge.archives.rollbackOk'));
+        } else {
+            toastr.error(result?.error || 'rollback_archive_failed');
+        }
+    } catch (error) {
+        toastr.error(String(error?.message || 'rollback_archive_failed'));
+    }
+    await refreshCharacterMergeTab();
 }
 
 async function refreshCharacterMergeGroups() {
@@ -3469,6 +3539,10 @@ function attachDomListeners() {
     $(document).on('click', '#cvm_complete_back', () => { exitMergeWizard(); });
     $(document).on('click', '#cvm_pending_rollback', () => { rollbackPendingMergeAction(); });
     $(document).on('click', '#cvm_pending_acknowledge', () => { acknowledgePendingMergeAction(); });
+    $(document).on('click', '.cvm-rollback-archive', function () {
+        const mergeId = this.dataset.mergeId;
+        if (mergeId) rollbackCompletedMergeArchive(mergeId);
+    });
     $(document).on('change', '#cvm_confirm_checkbox', function () {
         cvmState.confirmed = this.checked;
         const nextBtn = document.getElementById('cvm_wizard_next');

@@ -294,5 +294,16 @@
   "characterMerge.pending.rollbackConfirm": "Roll back the unfinished merge? Original PNGs will be restored from merge-backup. Already-merged chats stay together.",
   "characterMerge.pending.acknowledgeConfirm": "Clear the pending merge marker? Use this only after restoring state yourself.",
   "characterMerge.pending.rollbackOk": "Original PNGs restored from merge-backup.",
-  "characterMerge.pending.acknowledgeOk": "Pending merge marker cleared."
+  "characterMerge.pending.acknowledgeOk": "Pending merge marker cleared.",
+
+  "characterMerge.archives.heading": "Recent merges",
+  "characterMerge.archives.intro": "The original PNGs from your last few merges are archived here. You can roll back if you regret a pick. Chats that were already merged stay merged — only the cards and references are restored.",
+  "characterMerge.archives.empty": "No completed merges to roll back.",
+  "characterMerge.archives.mergedAt": "Merged at {time}",
+  "characterMerge.archives.kept": "Kept",
+  "characterMerge.archives.removed": "Merged out",
+  "characterMerge.archives.finalName": "Final filename",
+  "characterMerge.archives.rollback": "Roll back this merge",
+  "characterMerge.archives.rollbackConfirm": "Restore the two original PNGs from this archive? IMPORTANT: chats merged into the kept card will stay merged (we cannot split them by origin). Group / persona references will be reverted to the original kept card's filename — references that were originally the merged-out card's will need to be re-pointed manually. The current merged PNG will be saved as post-merge-snapshot.png inside the archive folder so you can re-do later.",
+  "characterMerge.archives.rollbackOk": "Original PNGs restored. Refresh the SillyTavern page to see the change."
 }

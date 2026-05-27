@@ -845,6 +845,33 @@
     padding: 12px 0;
 }
 
+.cvm-archive-row {
+    padding: 10px 0;
+    border-bottom: 1px dashed var(--cvt-border, rgba(255, 255, 255, 0.08));
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.cvm-archive-row:last-child {
+    border-bottom: none;
+}
+
+.cvm-archive-time {
+    font-weight: 600;
+    font-size: 13px;
+}
+
+.cvm-archive-meta code {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11px;
+    word-break: break-all;
+}
+
+.cvm-archive-actions {
+    justify-content: flex-end;
+}
+
 @media (max-width: 720px) {
     .cvm-card-pair {
         grid-template-columns: 1fr;

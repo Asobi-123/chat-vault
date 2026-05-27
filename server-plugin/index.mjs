@@ -4179,6 +4179,92 @@ async function rollbackPendingMerge(baseDirectory, directories) {
     };
 }
 
+// After-the-fact rollback of an already-finalized merge. Restores both
+// original PNGs from the merge-backup archive and reverses avatar reference
+// rewrites. The post-merge PNG is saved aside as post-merge-snapshot.png so
+// it is not silently lost. CHATS STAY MERGED — there is no per-jsonl origin
+// record from execution time, so we cannot accurately split them back into
+// primary's vs secondary's. The UI must warn the user before calling this.
+async function rollbackCompletedMerge(baseDirectory, directories, mergeId) {
+    const normalizedId = asString(mergeId).trim();
+    if (!normalizedId) {
+        throw new Error('mergeId_is_required');
+    }
+    const root = path.join(baseDirectory, MERGE_BACKUP_FOLDER_NAME);
+    const dir = path.join(root, normalizedId);
+    if (!fs.existsSync(dir)) {
+        throw new Error('merge_archive_not_found');
+    }
+
+    const info = readJson(path.join(dir, MERGE_INFO_FILE_NAME), null);
+    if (!info || typeof info !== 'object') {
+        throw new Error('merge_archive_invalid');
+    }
+    if (asString(info.outcome).trim() === 'rolled-back-after-completion'
+        || asString(info.outcome).trim() === 'rolled-back') {
+        throw new Error('merge_archive_already_rolled_back');
+    }
+
+    const primaryAvatar = asString(info.primary?.avatar).trim();
+    const secondaryAvatar = asString(info.secondary?.avatar).trim();
+    const finalAvatar = asString(info.final?.avatar).trim();
+    if (!primaryAvatar || !secondaryAvatar || !finalAvatar) {
+        throw new Error('merge_archive_missing_info');
+    }
+
+    const primaryBackupPath = path.join(dir, 'primary-original.png');
+    const secondaryBackupPath = path.join(dir, 'secondary-original.png');
+    if (!fs.existsSync(primaryBackupPath) || !fs.existsSync(secondaryBackupPath)) {
+        throw new Error('merge_archive_pngs_missing');
+    }
+
+    const primaryPngPath = path.join(directories.characters, primaryAvatar);
+    const secondaryPngPath = path.join(directories.characters, secondaryAvatar);
+    const finalPngPath = path.join(directories.characters, finalAvatar);
+
+    // Save the current merged PNG aside before overwriting so the user can
+    // recover the post-merge state if they want to redo.
+    if (fs.existsSync(finalPngPath)) {
+        const buffer = fs.readFileSync(finalPngPath);
+        writeBufferAtomic(path.join(dir, 'post-merge-snapshot.png'), buffer);
+        if (finalPngPath !== primaryPngPath) {
+            fs.unlinkSync(finalPngPath);
+        }
+    }
+
+    const primaryBytes = fs.readFileSync(primaryBackupPath);
+    writeBufferAtomic(primaryPngPath, primaryBytes);
+
+    if (!fs.existsSync(secondaryPngPath)) {
+        const secondaryBytes = fs.readFileSync(secondaryBackupPath);
+        writeBufferAtomic(secondaryPngPath, secondaryBytes);
+    }
+
+    // Reverse ref rewrites. Anything originally pointing at secondary got
+    // rewritten to finalAvatar during the merge; on rollback we rewrite those
+    // back to primaryAvatar (not secondary, because we don't track which were
+    // originally secondary's). The user has to manually re-point any group /
+    // persona references that were secondary's if that matters.
+    rewriteGroupAvatarRefs(directories, finalAvatar, primaryAvatar);
+    rewriteSettingsAvatarRefs(directories, finalAvatar, primaryAvatar);
+    rewriteVaultScopeAvatarRefs(baseDirectory, finalAvatar, primaryAvatar);
+
+    const updatedInfo = {
+        ...info,
+        rolledBackAfterCompletionAt: Date.now(),
+        outcome: 'rolled-back-after-completion',
+    };
+    writeJsonAtomic(path.join(dir, MERGE_INFO_FILE_NAME), updatedInfo);
+
+    return {
+        mergeId: normalizedId,
+        outcome: 'rolled-back-after-completion',
+        primaryAvatar,
+        secondaryAvatar,
+        finalAvatar,
+    };
+}
+
 export async function init(router) {
     router.use(express.json({ limit: MAX_REQUEST_SIZE }));
 
@@ -5016,6 +5102,40 @@ export async function init(router) {
         } catch (error) {
             console.error('[chat-vault] Failed to acknowledge pending merge:', error);
             return response.status(500).send({ ok: false, error: 'failed_to_acknowledge_pending_merge', detail: error.message });
+        }
+    });
+
+    router.post('/character-merge/rollback-archive', async (request, response) => {
+        if (!assertUser(request, response)) {
+            return;
+        }
+
+        try {
+            const mergeId = asString(request.body?.mergeId).trim();
+            if (!mergeId) {
+                return response.status(400).send({ ok: false, error: 'mergeId_is_required' });
+            }
+            const baseDirectory = getBaseDirectory(request);
+            const result = await rollbackCompletedMerge(baseDirectory, request.user.directories, mergeId);
+            return response.send({
+                ok: true,
+                result,
+            });
+        } catch (error) {
+            console.error('[chat-vault] Failed to roll back completed merge:', error);
+            const errorKey = asString(error.message).trim();
+            const knownErrors = [
+                'mergeId_is_required',
+                'merge_archive_not_found',
+                'merge_archive_invalid',
+                'merge_archive_already_rolled_back',
+                'merge_archive_missing_info',
+                'merge_archive_pngs_missing',
+            ];
+            const statusCode = knownErrors.includes(errorKey)
+                ? (errorKey === 'mergeId_is_required' ? 400 : 404)
+                : 500;
+            return response.status(statusCode).send({ ok: false, error: errorKey || 'failed_to_roll_back_completed_merge', detail: error.message });
         }
     });
 }
