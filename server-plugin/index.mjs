@@ -34,6 +34,10 @@ const DEFAULT_CLOUD_BRANCH = 'main';
 const DEFAULT_MAX_AUTO_SNAPSHOTS = 1;
 const DEFAULT_PREVIEW_MESSAGES = 12;
 const MAX_REQUEST_SIZE = '64mb';
+const MERGE_BACKUP_FOLDER_NAME = 'merge-backup';
+const PENDING_MERGE_FILE_NAME = 'pending-merge.json';
+const MERGE_INFO_FILE_NAME = 'merge-info.json';
+const MERGE_BACKUP_RETENTION = 5;
 const cloudRepoOperationQueue = new Map();
 
 function assertUser(request, response) {
@@ -179,6 +183,103 @@ function getAliasesPath(baseDirectory) {
 
 function getScopesIndexPath(baseDirectory) {
     return path.join(baseDirectory, SCOPES_INDEX_FILE_NAME);
+}
+
+// === Character merge: backup + transaction log helpers (0.3.0+) ===
+// merge-backup/<mergeId>/ stores a per-merge archive (original PNGs of both
+// cards, plus merge-info.json once the merge finalizes). The pending-merge.json
+// marker at the chat-vault root indicates that a merge is currently in flight
+// and points to the active merge-backup directory; if the process dies
+// mid-merge, this marker is the basis for offering the user a resume/rollback
+// choice on the next start.
+
+function getMergeBackupRoot(baseDirectory) {
+    return ensureDirectory(path.join(baseDirectory, MERGE_BACKUP_FOLDER_NAME));
+}
+
+function getPendingMergePath(baseDirectory) {
+    return path.join(baseDirectory, PENDING_MERGE_FILE_NAME);
+}
+
+function generateMergeBackupId() {
+    const now = new Date();
+    const pad = (value) => String(value).padStart(2, '0');
+    const datePart = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`;
+    const timePart = `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+    const random = crypto.randomBytes(2).toString('hex');
+    return `${datePart}-${timePart}-${random}`;
+}
+
+function createMergeBackupDirectory(baseDirectory) {
+    const mergeId = generateMergeBackupId();
+    const root = getMergeBackupRoot(baseDirectory);
+    const dir = ensureDirectory(path.join(root, mergeId));
+    return { mergeId, dir };
+}
+
+function readPendingMerge(baseDirectory) {
+    const value = readJson(getPendingMergePath(baseDirectory), null);
+    if (!value || typeof value !== 'object') {
+        return null;
+    }
+    return value;
+}
+
+function writePendingMerge(baseDirectory, payload) {
+    writeJsonAtomic(getPendingMergePath(baseDirectory), payload);
+}
+
+function clearPendingMerge(baseDirectory) {
+    deleteFileSafe(getPendingMergePath(baseDirectory));
+}
+
+function listMergeBackups(baseDirectory) {
+    const root = path.join(baseDirectory, MERGE_BACKUP_FOLDER_NAME);
+    if (!fs.existsSync(root)) {
+        return [];
+    }
+    return fs.readdirSync(root, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => {
+            const dir = path.join(root, entry.name);
+            const info = readJson(path.join(dir, MERGE_INFO_FILE_NAME), null);
+            const normalizedInfo = info && typeof info === 'object' ? info : null;
+            return {
+                mergeId: entry.name,
+                dir,
+                info: normalizedInfo,
+                hasInfo: Boolean(normalizedInfo),
+            };
+        })
+        .sort((left, right) => right.mergeId.localeCompare(left.mergeId));
+}
+
+function pruneOldMergeBackups(baseDirectory, keep = MERGE_BACKUP_RETENTION) {
+    const finalized = listMergeBackups(baseDirectory).filter((entry) => entry.hasInfo);
+    if (finalized.length <= keep) {
+        return;
+    }
+    for (const backup of finalized.slice(keep)) {
+        try {
+            fs.rmSync(backup.dir, { recursive: true, force: true });
+        } catch (error) {
+            console.warn('[chat-vault] Failed to remove old merge backup:', backup.dir, error);
+        }
+    }
+}
+
+function finalizeMergeBackup(baseDirectory, mergeBackupDir, outcome) {
+    const pending = readPendingMerge(baseDirectory);
+    if (pending) {
+        const infoPath = path.join(mergeBackupDir, MERGE_INFO_FILE_NAME);
+        writeJsonAtomic(infoPath, {
+            ...pending,
+            completedAt: Date.now(),
+            outcome: asString(outcome).trim() || 'completed',
+        });
+    }
+    clearPendingMerge(baseDirectory);
+    pruneOldMergeBackups(baseDirectory);
 }
 
 function buildEmptyAliases() {
