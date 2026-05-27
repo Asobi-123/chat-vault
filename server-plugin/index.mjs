@@ -4,6 +4,8 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 
+import { characterDefinitionFingerprint } from './character-fingerprint.mjs';
+
 export const info = {
     id: 'chat-vault',
     name: 'Chat Vault',
