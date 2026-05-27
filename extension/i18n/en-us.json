@@ -264,6 +264,9 @@
   "characterMerge.diff.different": "different",
   "characterMerge.diff.expand": "(click to expand)",
   "characterMerge.diff.bookEntries": "{count} entries",
+  "characterMerge.diff.summary": "{diff} different · {same} same",
+  "characterMerge.diff.showAll": "Show identical fields too",
+  "characterMerge.diff.allSame": "All fields are identical between these two cards. You may want to verify you picked the right pair.",
 
   "characterMerge.preview.finalAvatar": "Final PNG filename",
   "characterMerge.preview.chatsToMove": "{count} chat file(s) will be moved into the kept card's folder",

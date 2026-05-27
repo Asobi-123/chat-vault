@@ -264,6 +264,9 @@
   "characterMerge.diff.different": "不同",
   "characterMerge.diff.expand": "(点击展开全文)",
   "characterMerge.diff.bookEntries": "{count} 条",
+  "characterMerge.diff.summary": "{diff} 个字段不同 · {same} 个字段相同",
+  "characterMerge.diff.showAll": "也显示相同的字段",
+  "characterMerge.diff.allSame": "两张卡的所有字段都相同，可能配对选错了。",
 
   "characterMerge.preview.finalAvatar": "合并后文件名",
   "characterMerge.preview.chatsToMove": "{count} 条聊天会被搬移到保留方的目录下",

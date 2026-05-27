@@ -4053,11 +4053,9 @@ async function executeCharacterMerge(baseDirectory, directories, primaryAvatar, 
     };
     writePendingMerge(baseDirectory, pending);
 
-    // Overwrite primary PNG bytes with secondary content (the user chose to
-    // keep secondary's card definition).
-    fs.copyFileSync(secondaryPngPath, primaryPngPath);
-    pending.completedSteps.push('overwrite_primary_png');
-    writePendingMerge(baseDirectory, pending);
+    // primary is the card the user chose to keep — its bytes are already what
+    // we want. Just rename it to the canonical filename (strip __vault_xxx)
+    // if necessary; do NOT overwrite it with secondary's content.
 
     // Rename primary to final if primary's filename had a __vault_xxx suffix.
     if (primaryWillRename) {

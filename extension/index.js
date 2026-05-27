@@ -717,6 +717,11 @@ function buildAndMountFloatingUi() {
 
     overlay.addEventListener('click', (event) => {
         if (event.target === overlay) {
+            // Don't close mid-wizard — accidental clicks outside the card area
+            // would otherwise discard the merge picks.
+            if (cvmState.primary !== null && cvmState.step < 5) {
+                return;
+            }
             closePanel();
         }
     });
@@ -2969,6 +2974,7 @@ const cvmState = {
     step: 1,
     busy: false,
     confirmed: false,
+    showAllDiffFields: false,
 };
 
 function cvmEscapeHtml(value) {
@@ -3095,6 +3101,7 @@ async function enterMergeWizard(primary, secondary) {
     cvmState.executeResult = null;
     cvmState.step = 1;
     cvmState.confirmed = false;
+    cvmState.showAllDiffFields = false;
     document.getElementById('cvm_scan_view').hidden = true;
     document.getElementById('cvm_wizard_view').hidden = false;
     await loadMergePreview();
@@ -3127,6 +3134,7 @@ function exitMergeWizard() {
     cvmState.executeResult = null;
     cvmState.step = 1;
     cvmState.confirmed = false;
+    cvmState.showAllDiffFields = false;
     document.getElementById('cvm_scan_view').hidden = false;
     document.getElementById('cvm_wizard_view').hidden = true;
     refreshCharacterMergeGroups();
@@ -3213,8 +3221,32 @@ function renderWizardStep1() {
 function renderWizardStep2() {
     const diff = cvmState.diff;
     if (!diff) return `<p class="cvt-note">${cvmEscapeHtml(t('common.loading'))}</p>`;
-    const rows = diff.fields.map((row) => {
+
+    const allFields = diff.fields.map((f) => ({ ...f, isBook: false }));
+    if (diff.characterBook.entryCountA > 0 || diff.characterBook.entryCountB > 0) {
+        allFields.push({
+            field: 'character_book',
+            same: diff.characterBook.same,
+            entryCountA: diff.characterBook.entryCountA,
+            entryCountB: diff.characterBook.entryCountB,
+            isBook: true,
+        });
+    }
+    const sameCount = allFields.filter((f) => f.same).length;
+    const diffCount = allFields.length - sameCount;
+    const showAll = cvmState.showAllDiffFields === true;
+    const visibleFields = showAll ? allFields : allFields.filter((f) => !f.same);
+
+    const rows = visibleFields.map((row) => {
         const status = row.same ? t('characterMerge.diff.same') : t('characterMerge.diff.different');
+        if (row.isBook) {
+            return `
+                <div class="cvm-diff-row ${row.same ? 'cvm-diff-same' : 'cvm-diff-different'}">
+                    <div class="cvm-diff-field"><code>${cvmEscapeHtml(row.field)}</code> <span class="cvt-badge" data-kind="${row.same ? 'idle' : 'info'}">${cvmEscapeHtml(status)}</span></div>
+                    ${!row.same ? `<div class="cvm-diff-cell">${cvmEscapeHtml(t('characterMerge.diff.bookEntries', { count: row.entryCountA }))} (A) / ${cvmEscapeHtml(t('characterMerge.diff.bookEntries', { count: row.entryCountB }))} (B)</div>` : ''}
+                </div>
+            `;
+        }
         return `
             <div class="cvm-diff-row ${row.same ? 'cvm-diff-same' : 'cvm-diff-different'}">
                 <div class="cvm-diff-field"><code>${cvmEscapeHtml(row.field)}</code> <span class="cvt-badge" data-kind="${row.same ? 'idle' : 'info'}">${cvmEscapeHtml(status)}</span></div>
@@ -3222,21 +3254,24 @@ function renderWizardStep2() {
             </div>
         `;
     }).join('');
-    const bookA = diff.characterBook.entryCountA;
-    const bookB = diff.characterBook.entryCountB;
-    const bookSame = diff.characterBook.same;
-    const bookRow = (bookA === 0 && bookB === 0) ? '' : `
-        <div class="cvm-diff-row ${bookSame ? 'cvm-diff-same' : 'cvm-diff-different'}">
-            <div class="cvm-diff-field"><code>character_book</code> <span class="cvt-badge" data-kind="${bookSame ? 'idle' : 'info'}">${cvmEscapeHtml(bookSame ? t('characterMerge.diff.same') : t('characterMerge.diff.different'))}</span></div>
-            ${!bookSame ? `<div class="cvm-diff-cell">${cvmEscapeHtml(t('characterMerge.diff.bookEntries', { count: bookA }))} (A) / ${cvmEscapeHtml(t('characterMerge.diff.bookEntries', { count: bookB }))} (B)</div>` : ''}
-        </div>
-    `;
 
     const primary = cvmState.preview?.primary || cvmState.primary;
     const secondary = cvmState.preview?.secondary || cvmState.secondary;
+    const emptyDiffNote = (diffCount === 0 && !showAll)
+        ? `<p class="cvt-note cvt-note-strong">${cvmEscapeHtml(t('characterMerge.diff.allSame'))}</p>`
+        : '';
+
     return `
         <p class="cvt-note">${cvmEscapeHtml(t('characterMerge.wizard.step2.intro'))}</p>
-        <div class="cvm-diff-list">${rows}${bookRow}</div>
+        <div class="cvm-diff-summary">
+            <span class="cvt-summary">${cvmEscapeHtml(t('characterMerge.diff.summary', { diff: diffCount, same: sameCount }))}</span>
+            <label class="cvm-diff-toggle">
+                <input type="checkbox" id="cvm_diff_show_all" ${showAll ? 'checked' : ''}>
+                <span>${cvmEscapeHtml(t('characterMerge.diff.showAll'))}</span>
+            </label>
+        </div>
+        ${emptyDiffNote}
+        <div class="cvm-diff-list">${rows}</div>
         <div class="cvm-pick-keep cvt-card cvt-card-soft" style="margin-top:14px;">
             <strong>${cvmEscapeHtml(t('characterMerge.wizard.step2.pickHeading'))}</strong>
             <label class="cvm-pick-option"><input type="radio" name="cvm_pick" value="A" checked> ${cvmEscapeHtml(t('characterMerge.wizard.step2.pickA', { name: primary.avatarFileName }))}</label>
@@ -3438,6 +3473,11 @@ function attachDomListeners() {
         cvmState.confirmed = this.checked;
         const nextBtn = document.getElementById('cvm_wizard_next');
         if (nextBtn) nextBtn.disabled = !cvmState.confirmed;
+    });
+
+    $(document).on('change', '#cvm_diff_show_all', function () {
+        cvmState.showAllDiffFields = this.checked;
+        renderWizardStep();
     });
 
     $(document).on('click', '.cvt-theme-btn', function () {
