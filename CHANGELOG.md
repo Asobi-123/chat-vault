@@ -11,8 +11,9 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- Fixed Cloud Vault sync running out of memory on low-RAM hosts (notably Termux on Android) when the selection contained many chats or large character card PNGs. The previous flow loaded every selected resource buffer into memory before writing anything to disk, which routinely pushed the Node.js heap past 2-3 GB before any push happened.
-- Cloud resource persistence is now streamed: each character card / world info / persona avatar / persona profile / group definition is read, hashed, written to its content-addressed cloud path, and released individually instead of being buffered into one big in-memory map.
+- Fixed Cloud Vault sync running out of memory on low-RAM hosts (notably Termux on Android) when the selection contained many heavy chats. The previous flow loaded every selected chat's JSONL text and every selected resource buffer into memory before writing anything to disk, so a user with ~40 chats of ~50MB each could push the Node.js heap past 3 GB before any push happened.
+- Cloud snapshot persistence is now streamed at the entry level: each selected chat is read, hashed, written to its `<scope>/<snapshotId>.jsonl` + meta paths, and its JSONL string is released before the next entry is read. The selection object no longer retains JSONL bodies.
+- Cloud resource persistence is now streamed at the resource level: each character card / world info / persona avatar / persona profile / group definition is read, hashed, written to its content-addressed cloud path, and released individually instead of being buffered into one big in-memory map.
 - Removed the redundant second `fs.readFileSync` + `Buffer.compare` against the existing cloud resource file on every write. Because cloud resources are stored under their SHA-1 hash, a file existing at the target path is already equivalent to a content match.
 - Cloud snapshot rewrites now compare fingerprints from the existing meta file instead of reading the previous snapshot text back into memory just to do a string equality check.
 

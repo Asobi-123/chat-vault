@@ -1965,6 +1965,11 @@ function collectLocalCloudSelection(baseDirectory, config, directories, cloudPat
             continue;
         }
 
+        const scopeView = {
+            scopeId,
+            label: getSourceLabel(source),
+            source,
+        };
         const scopeEntries = [];
         for (const entry of selectedEntries.values()) {
             const snapshotPath = path.join(scopeDirectory, 'snapshots', asString(entry.snapshotFile).trim());
@@ -1975,6 +1980,7 @@ function collectLocalCloudSelection(baseDirectory, config, directories, cloudPat
             const snapshot = readSnapshotFile(snapshotPath);
             const jsonl = snapshotToJsonl(snapshot);
             const fingerprint = asString(entry.fingerprint).trim() || sha1(jsonl);
+            const snapshotId = buildCloudSnapshotId(scopeId, fingerprint);
             let resourceBundle;
             if (directories) {
                 if (streamingPersist) {
@@ -1990,14 +1996,33 @@ function collectLocalCloudSelection(baseDirectory, config, directories, cloudPat
             } else {
                 resourceBundle = { refs: [], resources: [] };
             }
-            scopeEntries.push({
-                ...entry,
-                scopeId,
-                snapshotId: buildCloudSnapshotId(scopeId, fingerprint),
-                fingerprint,
-                jsonl,
-                resources: resourceBundle.refs,
-            });
+
+            if (streamingPersist) {
+                persistCloudEntrySnapshot(cloudPaths, config, scopeView, {
+                    ...entry,
+                    scopeId,
+                    snapshotId,
+                    fingerprint,
+                    jsonl,
+                    resources: resourceBundle.refs,
+                });
+                scopeEntries.push({
+                    ...entry,
+                    scopeId,
+                    snapshotId,
+                    fingerprint,
+                    resources: resourceBundle.refs,
+                });
+            } else {
+                scopeEntries.push({
+                    ...entry,
+                    scopeId,
+                    snapshotId,
+                    fingerprint,
+                    jsonl,
+                    resources: resourceBundle.refs,
+                });
+            }
         }
 
         if (scopeEntries.length === 0) {
@@ -2006,7 +2031,7 @@ function collectLocalCloudSelection(baseDirectory, config, directories, cloudPat
 
         scopes.push({
             scopeId,
-            label: getSourceLabel(source),
+            label: scopeView.label,
             source,
             entries: scopeEntries.sort((left, right) => Number(right.createdAt || 0) - Number(left.createdAt || 0)),
         });
@@ -2031,94 +2056,100 @@ function writeCloudMarker(cloudPaths, config) {
     return nextMarker;
 }
 
+function persistCloudEntrySnapshot(cloudPaths, config, scope, entry) {
+    const objectPaths = getCloudObjectPaths(cloudPaths, scope.scopeId, entry.snapshotId);
+    const existingMeta = readJson(objectPaths.metaPath, null);
+    const firstUploadedAt = Math.trunc(asFiniteNumber(existingMeta?.publishedFrom?.firstUploadedAt, Date.now()));
+    const mergedResources = normalizeCloudResourceRefs([
+        ...normalizeCloudResourceRefs(existingMeta?.resources),
+        ...normalizeCloudResourceRefs(entry.resources),
+    ]);
+    const mergedPublishers = normalizeCloudPublishedByDevices(existingMeta?.publishedByDevices, existingMeta?.publishedFrom);
+    const existingPublisherIndex = mergedPublishers.findIndex((publisher) => publisher.deviceId === config.deviceId);
+    const currentPublisher = {
+        deviceId: config.deviceId,
+        deviceName: config.deviceName || config.deviceId,
+        firstUploadedAt: existingPublisherIndex >= 0
+            ? mergedPublishers[existingPublisherIndex].firstUploadedAt
+            : firstUploadedAt,
+        lastUploadedAt: Date.now(),
+    };
+    if (existingPublisherIndex >= 0) {
+        mergedPublishers[existingPublisherIndex] = currentPublisher;
+    } else {
+        mergedPublishers.push(currentPublisher);
+    }
+    const nextMeta = {
+        version: CLOUD_FORMAT_VERSION,
+        scopeId: scope.scopeId,
+        snapshotId: entry.snapshotId,
+        label: scope.label,
+        source: scope.source,
+        createdAt: Math.trunc(asFiniteNumber(entry.createdAt, Date.now())),
+        trigger: asString(entry.trigger).trim() || 'manual',
+        triggerLabel: asString(entry.triggerLabel).trim() || toTriggerLabel(entry.trigger),
+        mode: asString(entry.mode).trim() === 'auto' ? 'auto' : 'manual',
+        customName: asString(entry.customName).trim(),
+        pinned: Boolean(entry.pinned),
+        milestoneLabel: entry.pinned ? '长期保留' : '',
+        fingerprint: entry.fingerprint,
+        messageCount: Math.trunc(asFiniteNumber(entry.messageCount, 0)),
+        lastMessagePreview: asString(entry.lastMessagePreview),
+        lastMessageName: asString(entry.lastMessageName),
+        lastMessageAt: asString(entry.lastMessageAt),
+        resources: mergedResources,
+        snapshotPath: objectPaths.snapshotRelativePath,
+        publishedByDevices: mergedPublishers,
+        publishedFrom: {
+            deviceId: config.deviceId,
+            deviceName: config.deviceName,
+            firstUploadedAt,
+            lastUploadedAt: Date.now(),
+        },
+    };
+    const previousFingerprint = asString(existingMeta?.fingerprint).trim();
+    const snapshotExists = fs.existsSync(objectPaths.snapshotPath);
+    const comparablePreviousMeta = existingMeta
+        ? {
+            ...existingMeta,
+            publishedByDevices: normalizeCloudPublishedByDevices(existingMeta.publishedByDevices, existingMeta.publishedFrom)
+                .map((publisher) => ({
+                    ...publisher,
+                    lastUploadedAt: 0,
+                })),
+            publishedFrom: {
+                ...asObject(existingMeta.publishedFrom),
+                lastUploadedAt: 0,
+            },
+        }
+        : null;
+    const comparableNextMeta = {
+        ...nextMeta,
+        publishedByDevices: normalizeCloudPublishedByDevices(nextMeta.publishedByDevices)
+            .map((publisher) => ({
+                ...publisher,
+                lastUploadedAt: 0,
+            })),
+        publishedFrom: {
+            ...nextMeta.publishedFrom,
+            lastUploadedAt: 0,
+        },
+    };
+
+    if (!snapshotExists || previousFingerprint !== entry.fingerprint) {
+        if (typeof entry.jsonl === 'string' && entry.jsonl.length > 0) {
+            writeTextAtomic(objectPaths.snapshotPath, entry.jsonl);
+        }
+    }
+    if (JSON.stringify(comparablePreviousMeta) !== JSON.stringify(comparableNextMeta)) {
+        writeJsonAtomic(objectPaths.metaPath, nextMeta);
+    }
+}
+
 function writeCloudSelectionObjects(cloudPaths, config, selection) {
     for (const scope of selection.scopes) {
         for (const entry of scope.entries) {
-            const objectPaths = getCloudObjectPaths(cloudPaths, scope.scopeId, entry.snapshotId);
-            const existingMeta = readJson(objectPaths.metaPath, null);
-            const firstUploadedAt = Math.trunc(asFiniteNumber(existingMeta?.publishedFrom?.firstUploadedAt, Date.now()));
-            const mergedResources = normalizeCloudResourceRefs([
-                ...normalizeCloudResourceRefs(existingMeta?.resources),
-                ...normalizeCloudResourceRefs(entry.resources),
-            ]);
-            const mergedPublishers = normalizeCloudPublishedByDevices(existingMeta?.publishedByDevices, existingMeta?.publishedFrom);
-            const existingPublisherIndex = mergedPublishers.findIndex((publisher) => publisher.deviceId === config.deviceId);
-            const currentPublisher = {
-                deviceId: config.deviceId,
-                deviceName: config.deviceName || config.deviceId,
-                firstUploadedAt: existingPublisherIndex >= 0
-                    ? mergedPublishers[existingPublisherIndex].firstUploadedAt
-                    : firstUploadedAt,
-                lastUploadedAt: Date.now(),
-            };
-            if (existingPublisherIndex >= 0) {
-                mergedPublishers[existingPublisherIndex] = currentPublisher;
-            } else {
-                mergedPublishers.push(currentPublisher);
-            }
-            const nextMeta = {
-                version: CLOUD_FORMAT_VERSION,
-                scopeId: scope.scopeId,
-                snapshotId: entry.snapshotId,
-                label: scope.label,
-                source: scope.source,
-                createdAt: Math.trunc(asFiniteNumber(entry.createdAt, Date.now())),
-                trigger: asString(entry.trigger).trim() || 'manual',
-                triggerLabel: asString(entry.triggerLabel).trim() || toTriggerLabel(entry.trigger),
-                mode: asString(entry.mode).trim() === 'auto' ? 'auto' : 'manual',
-                customName: asString(entry.customName).trim(),
-                pinned: Boolean(entry.pinned),
-                milestoneLabel: entry.pinned ? '长期保留' : '',
-                fingerprint: entry.fingerprint,
-                messageCount: Math.trunc(asFiniteNumber(entry.messageCount, 0)),
-                lastMessagePreview: asString(entry.lastMessagePreview),
-                lastMessageName: asString(entry.lastMessageName),
-                lastMessageAt: asString(entry.lastMessageAt),
-                resources: mergedResources,
-                snapshotPath: objectPaths.snapshotRelativePath,
-                publishedByDevices: mergedPublishers,
-                publishedFrom: {
-                    deviceId: config.deviceId,
-                    deviceName: config.deviceName,
-                    firstUploadedAt,
-                    lastUploadedAt: Date.now(),
-                },
-            };
-            const previousFingerprint = asString(existingMeta?.fingerprint).trim();
-            const snapshotExists = fs.existsSync(objectPaths.snapshotPath);
-            const comparablePreviousMeta = existingMeta
-                ? {
-                    ...existingMeta,
-                    publishedByDevices: normalizeCloudPublishedByDevices(existingMeta.publishedByDevices, existingMeta.publishedFrom)
-                        .map((publisher) => ({
-                            ...publisher,
-                            lastUploadedAt: 0,
-                        })),
-                    publishedFrom: {
-                        ...asObject(existingMeta.publishedFrom),
-                        lastUploadedAt: 0,
-                    },
-                }
-                : null;
-            const comparableNextMeta = {
-                ...nextMeta,
-                publishedByDevices: normalizeCloudPublishedByDevices(nextMeta.publishedByDevices)
-                    .map((publisher) => ({
-                        ...publisher,
-                        lastUploadedAt: 0,
-                    })),
-                publishedFrom: {
-                    ...nextMeta.publishedFrom,
-                    lastUploadedAt: 0,
-                },
-            };
-
-            if (!snapshotExists || previousFingerprint !== entry.fingerprint) {
-                writeTextAtomic(objectPaths.snapshotPath, entry.jsonl);
-            }
-            if (JSON.stringify(comparablePreviousMeta) !== JSON.stringify(comparableNextMeta)) {
-                writeJsonAtomic(objectPaths.metaPath, nextMeta);
-            }
+            persistCloudEntrySnapshot(cloudPaths, config, scope, entry);
         }
     }
 }
@@ -2482,7 +2513,6 @@ async function pushCloudSelectionToRemote(baseDirectory, directories) {
                 const cloudPaths = await ensureCloudRepositoryReady(baseDirectory, config);
                 writeCloudMarker(cloudPaths, config);
                 const selection = collectLocalCloudSelection(baseDirectory, config, directories, cloudPaths);
-                writeCloudSelectionObjects(cloudPaths, config, selection);
                 writeCloudDeviceSelection(cloudPaths, config, selection);
                 const manifest = rebuildCloudManifest(cloudPaths);
 
