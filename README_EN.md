@@ -31,6 +31,7 @@ All independent backups and unsaved edits are written to:
 - **Git Cloud Vault** that pushes long-term and stable backups into a separate Git repository for cross-device recovery
 - **Resource-aware cloud restore** that can bring over character cards, personas, lorebooks, and groups together with the chat
 - **Append-only cloud retention with manual cleanup** so local deletion does not silently wipe older cloud copies
+- **Character Card Merge** that consolidates same-name duplicate cards into one (with field-level definition diff preview and automatic PNG archiving)
 - **Full panel UI** with floating orb, mobile layout, themes, and Chinese/English i18n
 - **Better long-list handling** with collapsible modules, inner scrolling panels, and search for both local and cloud backups
 
@@ -90,7 +91,8 @@ It does not automatically delete existing backup data under `user/files/chat-vau
 2. In **Current Chat**, view unsaved edits, auto backups, and manual backups
 3. In **Disaster Recovery**, browse global chat scopes and restore any backup as a new chat
 4. In **Cloud Vault**, configure the Git repository, sync to the remote vault, browse and search the remote catalog, and import or restore remote backups
-5. In **Settings**, adjust auto backup count, flush delay, draft sync interval, naming templates, and themes
+5. In **Card Merge**, clean up same-name duplicate character cards by merging their chats and backups into a single canonical PNG
+6. In **Settings**, adjust auto backup count, flush delay, draft sync interval, naming templates, and themes
 
 ## Data Layout
 

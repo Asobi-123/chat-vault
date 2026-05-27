@@ -7,6 +7,23 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-27
+
+### Added
+
+- New floating-panel tab **"Card Merge"** (`角色卡合并`). Detects same-name duplicate character cards locally, displays a side-by-side metadata comparison and a `chara` chunk field-level diff, and runs a 5-step wizard that merges chats, Chat Vault backups, group references, and persona references into the kept card. Original PNGs are archived to `merge-backup/<mergeId>/` before any change. The most recent 5 archives are retained globally.
+- New PNG `chara` tEXt chunk parser and content-addressed character fingerprint. The fingerprint hashes only the canonical card definition (name / description / personality / first_mes / scenario / mes_example / system_prompt / post_history_instructions / alternate_greetings / creator / creator_notes / character_version / tags / character_book) and explicitly excludes runtime fields (fav / talkativeness / chat / create_date / avatar / extensions at all levels).
+
+### Changed
+
+- Cloud Vault sync now identifies character card resources by their `chara` chunk fingerprint instead of by the full PNG bytes. Re-syncing the same card from the same device after SillyTavern wrote runtime data (tags, group bindings, etc.) back into the PNG no longer produces a duplicate cloud resource. World info, persona avatars, persona profiles, and group definitions continue to use the full-buffer hash because byte changes in those resources are intentional user edits.
+- Cloud restore-time character lookup now tries the chara fingerprint first, then falls back to the full-byte hash. Importing a card from the cloud reuses your local card if the card definitions match, even when the local PNG has byte drift from SillyTavern's runtime writes — eliminating the most common cause of "duplicate cards appearing after restore".
+
+### Compatibility
+
+- Legacy 0.2.x cloud backups remain fully usable: their meta files reference full PNG hashes and the import path still resolves them via the fallback lookup.
+- No data migration is required. The merge tab and the new fingerprint behavior are additive.
+
 ## [0.2.4] - 2026-05-27
 
 ### Fixed
