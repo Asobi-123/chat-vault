@@ -262,6 +262,7 @@
 
   "characterMerge.diff.same": "same",
   "characterMerge.diff.different": "different",
+  "characterMerge.diff.expand": "(click to expand)",
   "characterMerge.diff.bookEntries": "{count} entries",
 
   "characterMerge.preview.finalAvatar": "Final PNG filename",

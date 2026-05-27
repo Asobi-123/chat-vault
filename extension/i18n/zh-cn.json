@@ -262,6 +262,7 @@
 
   "characterMerge.diff.same": "相同",
   "characterMerge.diff.different": "不同",
+  "characterMerge.diff.expand": "(点击展开全文)",
   "characterMerge.diff.bookEntries": "{count} 条",
 
   "characterMerge.preview.finalAvatar": "合并后文件名",

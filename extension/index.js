@@ -3139,25 +3139,48 @@ function renderWizardStep() {
     const backBtn = document.getElementById('cvm_wizard_back');
     const nextBtn = document.getElementById('cvm_wizard_next');
     const cancelBtn = document.getElementById('cvm_wizard_cancel');
-    if (!titleEl || !contentEl || !nextBtn || !backBtn || !cancelBtn) return;
+    const actionsEl = document.querySelector('.cvm-wizard-actions');
+    if (!titleEl || !contentEl || !nextBtn || !backBtn || !cancelBtn || !actionsEl) return;
 
     const step = cvmState.step;
     titleEl.textContent = t(`characterMerge.wizard.step${step}.title`);
     progressEl.textContent = `${step} / 5`;
 
-    backBtn.hidden = (step <= 1 || step >= 4);
-    nextBtn.hidden = (step >= 4);
-    nextBtn.disabled = (step === 3 && !cvmState.confirmed);
-    cancelBtn.hidden = (step >= 5);
-    nextBtn.textContent = step === 3
-        ? t('characterMerge.wizard.startMerge')
-        : t('characterMerge.wizard.next');
+    if (step >= 4) {
+        actionsEl.hidden = true;
+    } else {
+        actionsEl.hidden = false;
+        backBtn.hidden = (step <= 1);
+        cancelBtn.hidden = false;
+        nextBtn.hidden = false;
+        nextBtn.disabled = (step === 3 && !cvmState.confirmed);
+        nextBtn.textContent = step === 3
+            ? t('characterMerge.wizard.startMerge')
+            : t('characterMerge.wizard.next');
+    }
 
     if (step === 1) contentEl.innerHTML = renderWizardStep1();
     else if (step === 2) contentEl.innerHTML = renderWizardStep2();
     else if (step === 3) contentEl.innerHTML = renderWizardStep3();
     else if (step === 4) contentEl.innerHTML = renderWizardStep4();
     else if (step === 5) contentEl.innerHTML = renderWizardStep5();
+}
+
+function cvmRenderDiffValue(label, value) {
+    if (value === undefined || value === null || value === '') {
+        return `<span class="cvm-diff-empty">${cvmEscapeHtml(label)}: —</span>`;
+    }
+    const text = typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value);
+    if (text.length <= 200) {
+        return `<span class="cvm-diff-text">${cvmEscapeHtml(label)}: ${cvmEscapeHtml(text)}</span>`;
+    }
+    const preview = text.slice(0, 200);
+    return `
+        <details class="cvm-diff-expand">
+            <summary>${cvmEscapeHtml(label)}: ${cvmEscapeHtml(preview)}… <em class="cvt-note">${cvmEscapeHtml(t('characterMerge.diff.expand'))}</em></summary>
+            <pre class="cvm-diff-full">${cvmEscapeHtml(text)}</pre>
+        </details>
+    `;
 }
 
 function renderCandidateCardBlock(card, label) {
@@ -3191,15 +3214,11 @@ function renderWizardStep2() {
     const diff = cvmState.diff;
     if (!diff) return `<p class="cvt-note">${cvmEscapeHtml(t('common.loading'))}</p>`;
     const rows = diff.fields.map((row) => {
-        const valueAStr = typeof row.valueA === 'object' ? JSON.stringify(row.valueA) : String(row.valueA ?? '');
-        const valueBStr = typeof row.valueB === 'object' ? JSON.stringify(row.valueB) : String(row.valueB ?? '');
-        const a = cvmTruncate(valueAStr, 200);
-        const b = cvmTruncate(valueBStr, 200);
         const status = row.same ? t('characterMerge.diff.same') : t('characterMerge.diff.different');
         return `
             <div class="cvm-diff-row ${row.same ? 'cvm-diff-same' : 'cvm-diff-different'}">
                 <div class="cvm-diff-field"><code>${cvmEscapeHtml(row.field)}</code> <span class="cvt-badge" data-kind="${row.same ? 'idle' : 'info'}">${cvmEscapeHtml(status)}</span></div>
-                ${!row.same ? `<div class="cvm-diff-cell">A: ${cvmEscapeHtml(a) || '—'}</div><div class="cvm-diff-cell">B: ${cvmEscapeHtml(b) || '—'}</div>` : ''}
+                ${!row.same ? `<div class="cvm-diff-cell">${cvmRenderDiffValue('A', row.valueA)}</div><div class="cvm-diff-cell">${cvmRenderDiffValue('B', row.valueB)}</div>` : ''}
             </div>
         `;
     }).join('');
@@ -3264,7 +3283,6 @@ function renderWizardStep5() {
     if (!r) return `<p class="cvt-note">${cvmEscapeHtml(t('common.loading'))}</p>`;
     return `
         <div class="cvm-complete">
-            <strong>${cvmEscapeHtml(t('characterMerge.wizard.step5.title'))}</strong>
             <ul class="cvt-bullets">
                 <li>${cvmEscapeHtml(t('characterMerge.complete.chatsMoved', { count: r.chatsMoved ?? 0 }))}</li>
                 <li>${cvmEscapeHtml(t('characterMerge.complete.finalAvatar', { name: r.finalAvatar || '' }))}</li>
