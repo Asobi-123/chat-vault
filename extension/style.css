@@ -180,8 +180,8 @@
 }
 
 .cvt-tabs {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    display: flex;
+    flex-wrap: wrap;
     gap: 8px;
     padding: 10px 14px;
     border-bottom: 1px solid color-mix(in srgb, var(--cvt-border) 50%, transparent);
@@ -190,12 +190,13 @@
 
 .cvt-tab {
     border: 1px solid color-mix(in srgb, var(--cvt-border) 50%, transparent);
-    border-radius: 12px;
-    background: color-mix(in srgb, var(--cvt-bg) 70%, transparent);
+    border-radius: 999px;
+    background: transparent;
     color: var(--cvt-text);
-    min-height: 38px;
+    min-height: 32px;
+    padding: 4px 14px;
     font-size: 13px;
-    font-weight: 700;
+    font-weight: 600;
     cursor: pointer;
     opacity: 0.64;
     transition: opacity 0.15s, background 0.15s, border-color 0.15s;
@@ -622,12 +623,46 @@
     }
 
     .cvt-tab {
-        min-height: 34px;
+        min-height: 28px;
+        padding: 3px 12px;
         font-size: 12px;
+        font-weight: 600;
     }
 
     .cvt-card {
         padding: 10px;
+    }
+
+    .cvt-page.active {
+        gap: 8px;
+    }
+
+    .cvt-section-head {
+        margin-bottom: 8px;
+    }
+
+    .cvt-section-head strong {
+        font-size: 13px;
+    }
+
+    .cvt-card-body {
+        gap: 8px;
+    }
+
+    /* Long explainers keep their text but stop dominating the screen on
+     * mobile. Users can still scroll inside the card to read everything. */
+    .cvt-card-body[data-cvt-section="cm_explainer"]:not(.is-collapsed) {
+        max-height: 160px;
+        overflow-y: auto;
+        padding-right: 4px;
+    }
+
+    .cvm-diff-full {
+        max-height: 200px;
+    }
+
+    .cvm-card-pair {
+        gap: 8px;
     }
 
     .cvt-grid-2,
