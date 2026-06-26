@@ -7,6 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-06-26
+
+### Fixed
+
+- Fixed disaster recovery backup actions targeting the wrong local scope when several imported copies share the same character name and chat id. Snapshot action buttons now carry the exact stored source, including `scopeKey`, and the server prioritizes that explicit scope when resolving backup operations.
+- Added a disaster recovery scope-level delete action for removing an entire local recovery scope, including all backups, draft mirror data, aliases, and the rebuilt global recovery index. This is separate from `Clean Empty`, which still only removes already-empty scopes.
+- Snapshot preview, restore, pin, rename, and delete now operate only on existing scopes; a failed lookup no longer creates a new empty scope as a side effect.
+
 ## [0.3.1] - 2026-06-26
 
 ### Fixed

@@ -271,6 +271,7 @@ Message lines are copied from the active SillyTavern chat array at snapshot time
 - Overwrite-current is only enabled from the active current-chat view, not from the global recovery view
 - Reading snapshot status for a missing scope does not create a new empty scope directory
 - Empty scope cleanup removes only scopes with no backup entries, no `draft.json`, and no snapshot files; matching aliases are removed and `scopes-index.json` is rebuilt
+- Scope-level delete removes one selected local recovery scope, including all snapshot files, `draft.json`, matching aliases, and the rebuilt `scopes-index.json`; it does not delete the live SillyTavern chat file
 
 ## Cloud Vault Marker
 

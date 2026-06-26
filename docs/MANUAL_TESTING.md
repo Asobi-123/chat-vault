@@ -141,7 +141,8 @@ Steps:
 4. Open one scope and preview a backup.
 5. Restore one backup as a new chat.
 6. Delete the last backup in a disposable scope, then refresh the recovery list.
-7. If old 0-backup shells exist, click `清理空记录`.
+7. In a disposable scope, click `删除全部备份`.
+8. If old 0-backup shells exist, click `清理空记录`.
 
 Expected:
 
@@ -150,6 +151,7 @@ Expected:
 - Preview shows the selected backup contents.
 - Restore-as-new creates a new chat successfully.
 - Deleting the last local backup removes the empty scope from the recovery list.
+- `删除全部备份` removes that whole local recovery scope without deleting the live SillyTavern chat file.
 - `清理空记录` removes old empty scope shells without touching scopes that still contain backups, draft mirrors, or snapshot files.
 
 ## 9. Chat Rename Continuity

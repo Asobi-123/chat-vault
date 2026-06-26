@@ -163,6 +163,7 @@ function normalizeSource(rawSource) {
     const userName = asString(source.userName).trim() || 'unused';
     const currentName = asString(source.currentName).trim();
     const aliasKey = buildSourceAliasKey({ kind, chatId, groupId, avatarUrl });
+    const scopeKey = asString(source.scopeKey).trim() || aliasKey;
 
     return {
         kind,
@@ -174,7 +175,7 @@ function normalizeSource(rawSource) {
         userName,
         currentName,
         aliasKey,
-        scopeKey: aliasKey,
+        scopeKey,
     };
 }
 
@@ -470,6 +471,11 @@ function sourceMatchesDescriptor(storedSource, candidateSource) {
 }
 
 function findScopeIdByDescriptor(scopesRoot, aliases, source) {
+    const explicitScopeId = asString(source.scopeKey).trim();
+    if (explicitScopeId && findScopeDirectoryById(scopesRoot, explicitScopeId)) {
+        return explicitScopeId;
+    }
+
     const exactScopeId = asString(aliases.aliases[source.aliasKey]?.scopeId).trim();
     if (exactScopeId) {
         return exactScopeId;
@@ -793,6 +799,41 @@ function cleanupEmptyScopes(baseDirectory) {
     const scopesIndex = rebuildScopesIndex(baseDirectory, scopesRoot);
     return {
         removedScopes,
+        removedAliases,
+        generatedAt: scopesIndex.generatedAt,
+        scopes: scopesIndex.scopes,
+    };
+}
+
+function deleteScope(baseDirectory, scopeId) {
+    const scopesRoot = ensureDirectory(path.join(baseDirectory, 'scopes'));
+    const normalizedScopeId = asString(scopeId).trim();
+    if (!normalizedScopeId) {
+        throw new Error('scopeId is required');
+    }
+
+    const scopeDirectory = findScopeDirectoryById(scopesRoot, normalizedScopeId);
+    const existingScopesIndex = rebuildScopesIndex(baseDirectory, scopesRoot);
+    if (!scopeDirectory) {
+        return {
+            removed: false,
+            removedAliases: 0,
+            generatedAt: existingScopesIndex.generatedAt,
+            scopes: existingScopesIndex.scopes,
+        };
+    }
+
+    const removedAliases = removeAliasesForScope(baseDirectory, normalizedScopeId);
+    try {
+        fs.rmSync(scopeDirectory, { recursive: true, force: true });
+    } catch (error) {
+        console.warn('[chat-vault] Failed to remove scope directory:', scopeDirectory, error);
+        throw error;
+    }
+
+    const scopesIndex = rebuildScopesIndex(baseDirectory, scopesRoot);
+    return {
+        removed: true,
         removedAliases,
         generatedAt: scopesIndex.generatedAt,
         scopes: scopesIndex.scopes,
@@ -1164,6 +1205,34 @@ function buildListResponse(paths, source) {
         source: index.source,
         draft: getDraft(paths),
         entries: index.entries.map(withoutJsonl),
+    };
+}
+
+function getExistingSnapshotContext(baseDirectory, rawSource, snapshotId) {
+    const source = normalizeSource(rawSource);
+    const normalizedSnapshotId = asString(snapshotId).trim();
+    if (!source.chatId || !normalizedSnapshotId) {
+        return null;
+    }
+
+    const paths = getExistingScopePathsFromBaseDirectory(baseDirectory, source);
+    if (!paths) {
+        return null;
+    }
+
+    const resolvedSource = paths.source;
+    const index = readIndex(paths, resolvedSource);
+    const entry = index.entries.find((item) => item.id === normalizedSnapshotId);
+    if (!entry) {
+        return null;
+    }
+
+    return {
+        source,
+        paths,
+        resolvedSource,
+        index,
+        entry,
     };
 }
 
@@ -4593,6 +4662,30 @@ export async function init(router) {
         }
     });
 
+    router.post('/scope/delete', (request, response) => {
+        if (!assertUser(request, response)) {
+            return;
+        }
+
+        try {
+            const scopeId = asString(request.body?.scopeId).trim();
+            if (!scopeId) {
+                return response.status(400).send({ ok: false, error: 'scopeId is required' });
+            }
+
+            const baseDirectory = getBaseDirectory(request);
+            const result = deleteScope(baseDirectory, scopeId);
+            return response.send({
+                ok: true,
+                scopeId,
+                ...result,
+            });
+        } catch (error) {
+            console.error('[chat-vault] Failed to delete scope:', error);
+            return response.status(500).send({ ok: false, error: 'failed_to_delete_scope' });
+        }
+    });
+
     router.post('/scope/rebind-chat', (request, response) => {
         if (!assertUser(request, response)) {
             return;
@@ -4629,13 +4722,11 @@ export async function init(router) {
                 return response.status(400).send({ ok: false, error: 'source and snapshotId are required' });
             }
 
-            const paths = getScopePaths(request, source);
-            const resolvedSource = paths.source;
-            const index = readIndex(paths, resolvedSource);
-            const entry = index.entries.find((item) => item.id === snapshotId);
-            if (!entry) {
+            const snapshotContext = getExistingSnapshotContext(getBaseDirectory(request), source, snapshotId);
+            if (!snapshotContext) {
                 return response.status(404).send({ ok: false, error: 'snapshot_not_found' });
             }
+            const { paths, entry } = snapshotContext;
 
             const previewLimit = normalizePreviewLimit(request.body?.limit);
             const snapshot = readSnapshotFile(path.join(paths.snapshotsDirectory, entry.snapshotFile));
@@ -4673,13 +4764,11 @@ export async function init(router) {
                 return response.status(400).send({ ok: false, error: 'source and snapshotId are required' });
             }
 
-            const paths = getScopePaths(request, source);
-            const resolvedSource = paths.source;
-            const index = readIndex(paths, resolvedSource);
-            const entry = index.entries.find((item) => item.id === snapshotId);
-            if (!entry) {
+            const snapshotContext = getExistingSnapshotContext(getBaseDirectory(request), source, snapshotId);
+            if (!snapshotContext) {
                 return response.status(404).send({ ok: false, error: 'snapshot_not_found' });
             }
+            const { paths, entry } = snapshotContext;
 
             const snapshot = readSnapshotFile(path.join(paths.snapshotsDirectory, entry.snapshotFile));
             const summary = getSnapshotSummary(snapshot);
@@ -4709,13 +4798,11 @@ export async function init(router) {
                 return response.status(400).send({ ok: false, error: 'source and snapshotId are required' });
             }
 
-            const paths = getScopePaths(request, source);
-            const resolvedSource = paths.source;
-            const index = readIndex(paths, resolvedSource);
-            const entry = index.entries.find((item) => item.id === snapshotId);
-            if (!entry) {
+            const snapshotContext = getExistingSnapshotContext(getBaseDirectory(request), source, snapshotId);
+            if (!snapshotContext) {
                 return response.status(404).send({ ok: false, error: 'snapshot_not_found' });
             }
+            const { paths, index, entry } = snapshotContext;
 
             const shouldPin = request.body?.pinned === undefined ? !entry.pinned : Boolean(request.body?.pinned);
             entry.pinned = shouldPin;
@@ -4744,13 +4831,11 @@ export async function init(router) {
                 return response.status(400).send({ ok: false, error: 'source and snapshotId are required' });
             }
 
-            const paths = getScopePaths(request, source);
-            const resolvedSource = paths.source;
-            const index = readIndex(paths, resolvedSource);
-            const entry = index.entries.find((item) => item.id === snapshotId);
-            if (!entry) {
+            const snapshotContext = getExistingSnapshotContext(getBaseDirectory(request), source, snapshotId);
+            if (!snapshotContext) {
                 return response.status(404).send({ ok: false, error: 'snapshot_not_found' });
             }
+            const { paths, index, entry } = snapshotContext;
 
             deleteFileSafe(path.join(paths.snapshotsDirectory, entry.snapshotFile));
             index.entries = index.entries.filter((item) => item.id !== snapshotId);
@@ -4782,13 +4867,11 @@ export async function init(router) {
                 return response.status(400).send({ ok: false, error: 'source, snapshotId and name are required' });
             }
 
-            const paths = getScopePaths(request, source);
-            const resolvedSource = paths.source;
-            const index = readIndex(paths, resolvedSource);
-            const entry = index.entries.find((item) => item.id === snapshotId);
-            if (!entry) {
+            const snapshotContext = getExistingSnapshotContext(getBaseDirectory(request), source, snapshotId);
+            if (!snapshotContext) {
                 return response.status(404).send({ ok: false, error: 'snapshot_not_found' });
             }
+            const { paths, index, entry } = snapshotContext;
 
             const customName = requestedName.slice(0, 120);
             const nextFileName = buildSnapshotFileNameFromLabel(customName, entry.id);

@@ -957,6 +957,12 @@ function areSourcesEquivalent(left, right) {
         return false;
     }
 
+    const leftScopeKey = String(left.scopeKey || '').trim();
+    const rightScopeKey = String(right.scopeKey || '').trim();
+    if (leftScopeKey || rightScopeKey) {
+        return Boolean(leftScopeKey && rightScopeKey && leftScopeKey === rightScopeKey);
+    }
+
     return String(left.kind || '') === String(right.kind || '')
         && String(left.chatId || '') === String(right.chatId || '')
         && String(left.groupId || '') === String(right.groupId || '')
@@ -969,6 +975,22 @@ function getStatusSource() {
 
 function getActionSource() {
     return statusCache?.source || activeScopeOverride || buildSource();
+}
+
+function encodeDataJson(value) {
+    try {
+        return encodeURIComponent(JSON.stringify(value || {}));
+    } catch {
+        return '';
+    }
+}
+
+function decodeDataJson(value) {
+    try {
+        return JSON.parse(decodeURIComponent(String(value || '')));
+    } catch {
+        return null;
+    }
 }
 
 function getScopeDisplayLabel(source) {
@@ -1382,6 +1404,7 @@ function buildCheckpointItem(entry, { allowOverwrite = true, actionList = null }
         button.className = action.danger ? 'menu_button cvt-danger' : 'menu_button';
         button.dataset.action = action.action;
         button.dataset.snapshotId = entry.id;
+        button.dataset.source = encodeDataJson(entry.source || statusCache?.source || activeScopeOverride || buildSource());
         button.textContent = action.text;
         actions.appendChild(button);
     }
@@ -1624,6 +1647,14 @@ function buildRecoveryScopeItem(scope) {
     openButton.textContent = t('recovery.openScope');
     actions.appendChild(openButton);
 
+    const deleteButton = document.createElement('button');
+    deleteButton.type = 'button';
+    deleteButton.className = 'menu_button cvt-danger';
+    deleteButton.dataset.action = 'delete-scope';
+    deleteButton.dataset.scopeId = scope.scopeId;
+    deleteButton.textContent = t('recovery.deleteScope');
+    actions.appendChild(deleteButton);
+
     item.appendChild(title);
     item.appendChild(meta);
     item.appendChild(preview);
@@ -1702,6 +1733,35 @@ async function cleanupEmptyRecoveryScopes() {
     renderRecoveryScopeList();
     renderRecoveryStatus(activeScopeOverride ? statusCache : null);
     toastr.success(t('recovery.cleanupEmptyDone', { count: result.removedScopes || 0 }), getAppTitle());
+}
+
+async function deleteRecoveryScope(scopeId) {
+    const scope = recoveryScopeCache.find((item) => String(item.scopeId || '') === String(scopeId || ''));
+    if (!scope) {
+        toastr.error(t('recovery.scopeNotFound'), getAppTitle());
+        return;
+    }
+
+    const confirm = await Popup.show.confirm(
+        t('popup.deleteScope.title'),
+        t('popup.deleteScope.body', {
+            label: scope.label || getScopeDisplayLabel(scope.source),
+            count: scope.entryCount || 0,
+        }),
+    );
+    if (!confirm) {
+        return;
+    }
+
+    const result = await callApi('/scope/delete', { scopeId });
+    recoveryScopeCache = Array.isArray(result.scopes) ? result.scopes : recoveryScopeCache.filter((item) => item.scopeId !== scopeId);
+    if (activeScopeOverride && areSourcesEquivalent(activeScopeOverride, scope.source)) {
+        activeScopeOverride = null;
+        statusCache = null;
+        renderRecoveryStatus(null);
+    }
+    renderRecoveryScopeList();
+    toastr.success(t('recovery.deleteScopeDone'), getAppTitle());
 }
 
 async function openRecoveryScope(scopeId) {
@@ -2559,8 +2619,8 @@ function buildRestoreName(entry, sourceOverride = null) {
     return sanitizeNamePart(rendered) || `${t('app.title')} ${formatDateSlug(entry?.createdAt || Date.now())}`;
 }
 
-async function fetchSnapshot(snapshotId) {
-    const source = getActionSource();
+async function fetchSnapshot(snapshotId, sourceOverride = null) {
+    const source = sourceOverride || getActionSource();
     if (!source) {
         throw new Error('No active chat');
     }
@@ -2592,8 +2652,8 @@ async function showPreviewPopup(messages = []) {
     });
 }
 
-async function previewSnapshot(snapshotId) {
-    const source = getActionSource();
+async function previewSnapshot(snapshotId, sourceOverride = null) {
+    const source = sourceOverride || getActionSource();
     if (!source) {
         return;
     }
@@ -2718,10 +2778,10 @@ async function restoreMessagesAsNew(source, entry, header, messages) {
     toastr.success(t('toasts.restoredNewChat'), getAppTitle());
 }
 
-async function restoreSnapshotAsNew(snapshotId) {
-    const result = await fetchSnapshot(snapshotId);
+async function restoreSnapshotAsNew(snapshotId, sourceOverride = null) {
+    const result = await fetchSnapshot(snapshotId, sourceOverride);
     await restoreMessagesAsNew(
-        getActionSource(),
+        sourceOverride || getActionSource(),
         result.entry || {},
         result.header || {},
         Array.isArray(result.messages) ? result.messages : [],
@@ -2785,8 +2845,8 @@ async function overwriteCurrentChat(snapshotId) {
     toastr.success(t('toasts.overwriteDone'), getAppTitle());
 }
 
-async function togglePinSnapshot(snapshotId) {
-    const source = getActionSource();
+async function togglePinSnapshot(snapshotId, sourceOverride = null) {
+    const source = sourceOverride || getActionSource();
     if (!source) {
         return;
     }
@@ -2799,8 +2859,8 @@ async function togglePinSnapshot(snapshotId) {
     await refreshStatus({ quiet: true });
 }
 
-async function deleteSnapshot(snapshotId) {
-    const source = getActionSource();
+async function deleteSnapshot(snapshotId, sourceOverride = null) {
+    const source = sourceOverride || getActionSource();
     if (!source) {
         return;
     }
@@ -2826,13 +2886,14 @@ async function deleteSnapshot(snapshotId) {
     await refreshStatus({ quiet: true });
 }
 
-async function renameSnapshot(snapshotId) {
-    const source = getActionSource();
+async function renameSnapshot(snapshotId, sourceOverride = null) {
+    const source = sourceOverride || getActionSource();
     if (!source) {
         return;
     }
 
-    const entry = statusCache?.entries?.find((item) => item.id === snapshotId);
+    const entry = statusCache?.entries?.find((item) => item.id === snapshotId && (!sourceOverride || areSourcesEquivalent(item.source, sourceOverride)))
+        || statusCache?.entries?.find((item) => item.id === snapshotId);
     const currentName = String(entry?.customName || '').trim() || formatDateTime(entry?.createdAt || Date.now());
     const requestedName = await Popup.show.input(
         t('popup.renameBackup.title'),
@@ -3728,23 +3789,24 @@ function attachDomListeners() {
     $(document).on('click', '#cvt_checkpoint_list [data-action], #cvt_recovery_checkpoint_list [data-action]', async function () {
         const action = this.dataset.action;
         const snapshotId = this.dataset.snapshotId;
+        const sourceOverride = decodeDataJson(this.dataset.source);
         if (!snapshotId) {
             return;
         }
 
         try {
             if (action === 'preview') {
-                await previewSnapshot(snapshotId);
+                await previewSnapshot(snapshotId, sourceOverride);
                 return;
             }
 
             if (action === 'rename') {
-                await renameSnapshot(snapshotId);
+                await renameSnapshot(snapshotId, sourceOverride);
                 return;
             }
 
             if (action === 'restore-new') {
-                await restoreSnapshotAsNew(snapshotId);
+                await restoreSnapshotAsNew(snapshotId, sourceOverride);
                 return;
             }
 
@@ -3754,12 +3816,12 @@ function attachDomListeners() {
             }
 
             if (action === 'pin') {
-                await togglePinSnapshot(snapshotId);
+                await togglePinSnapshot(snapshotId, sourceOverride);
                 return;
             }
 
             if (action === 'delete') {
-                await deleteSnapshot(snapshotId);
+                await deleteSnapshot(snapshotId, sourceOverride);
             }
         } catch (error) {
             console.error('[chat-vault] Action failed:', action, error);
@@ -3778,6 +3840,20 @@ function attachDomListeners() {
         } catch (error) {
             console.error('[chat-vault] Failed to open recovery scope:', error);
             toastr.error(t('recovery.openFailed'), getAppTitle());
+        }
+    });
+
+    $(document).on('click', '#cvt_scope_list [data-action="delete-scope"]', async function () {
+        const scopeId = this.dataset.scopeId;
+        if (!scopeId) {
+            return;
+        }
+
+        try {
+            await deleteRecoveryScope(scopeId);
+        } catch (error) {
+            console.error('[chat-vault] Failed to delete recovery scope:', error);
+            toastr.error(t('recovery.deleteScopeFailed'), getAppTitle());
         }
     });
 

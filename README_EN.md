@@ -161,6 +161,11 @@ The disaster recovery page shows a global scope list independent from the curren
 Use `Clean Empty` in the **Disaster Recovery** tab.
 It only removes empty chat scopes with no backups, no unsaved edit mirror, and no leftover snapshot files.
 
+**Q: How do I delete a whole Disaster Recovery chat scope with its backups?**
+
+Use `Delete All Backups` on the chat scope card in the **Disaster Recovery** tab.
+It deletes all local backups, unsaved edit records, and recovery index entries under that scope, but it does not delete the live SillyTavern chat file.
+
 **Q: Is Cloud Vault real-time sync?**
 
 No.

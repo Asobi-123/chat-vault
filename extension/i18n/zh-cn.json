@@ -67,6 +67,9 @@
   "recovery.cleanupEmpty": "清理空记录",
   "recovery.cleanupEmptyDone": "已清理 {count} 条空记录。",
   "recovery.cleanupEmptyFailed": "清理空记录失败。",
+  "recovery.deleteScope": "删除全部备份",
+  "recovery.deleteScopeDone": "聊天范围已删除。",
+  "recovery.deleteScopeFailed": "删除聊天范围失败。",
   "recovery.backToChat": "返回当前聊天",
   "recovery.useCase": "什么时候用：当前聊天文件崩了、聊天列表打不开、原聊天名已经记不清，或者你只想从服务器侧独立备份里把某个阶段捞回来。",
   "recovery.capability": "能做到什么：不依赖当前已打开聊天，直接浏览全局聊天线，查看每条线下的备份，并把任意一条恢复成新聊天。默认不提供直接覆盖当前聊天，避免误操作。",
@@ -217,6 +220,8 @@
   "popup.overwrite.body": "会直接覆盖当前聊天文件。当前聊天会被改写。",
   "popup.deleteBackup.title": "删除聊天备份",
   "popup.deleteBackup.body": "会删除这一条聊天备份。",
+  "popup.deleteScope.title": "删除整个聊天范围",
+  "popup.deleteScope.body": "会删除「{label}」下的全部 {count} 条本地备份、未保存编辑记录和灾难恢复索引。这个操作不会删除酒馆正式聊天文件。",
   "popup.renameBackup.title": "重命名聊天备份",
   "popup.renameBackup.body": "会修改这条聊天备份的显示名，并同步重命名底层备份文件。",
 

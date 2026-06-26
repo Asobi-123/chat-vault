@@ -67,6 +67,9 @@
   "recovery.cleanupEmpty": "Clean Empty",
   "recovery.cleanupEmptyDone": "Cleaned {count} empty records.",
   "recovery.cleanupEmptyFailed": "Failed to clean empty records.",
+  "recovery.deleteScope": "Delete All Backups",
+  "recovery.deleteScopeDone": "Chat scope deleted.",
+  "recovery.deleteScopeFailed": "Failed to delete the chat scope.",
   "recovery.backToChat": "Back to Current Chat",
   "recovery.useCase": "When to use it: the current chat file broke, the chat list no longer opens, you no longer remember the original chat name, or you want to pull back an older stage directly from server-side backups.",
   "recovery.capability": "What it can do: browse the global chat scopes without relying on the current chat being open, inspect backups under each scope, and restore any one of them as a new chat. Direct overwrite is intentionally disabled here to avoid mistakes.",
@@ -217,6 +220,8 @@
   "popup.overwrite.body": "This directly overwrites the current chat file.",
   "popup.deleteBackup.title": "Delete Chat Backup",
   "popup.deleteBackup.body": "This deletes this backup entry.",
+  "popup.deleteScope.title": "Delete Entire Chat Scope",
+  "popup.deleteScope.body": "This deletes all {count} local backups, unsaved edit records, and recovery index entries under \"{label}\". It does not delete the live SillyTavern chat file.",
   "popup.renameBackup.title": "Rename Chat Backup",
   "popup.renameBackup.body": "This changes the display name and renames the underlying backup file.",
 
