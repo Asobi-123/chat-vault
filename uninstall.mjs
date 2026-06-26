@@ -21,6 +21,28 @@ function getDockerComposeText(sillyTavernRoot) {
     ].map(readTextIfExists).join('\n');
 }
 
+function isDirectory(targetPath) {
+    return fs.existsSync(targetPath) && fs.statSync(targetPath).isDirectory();
+}
+
+function getDataRootCandidates(sillyTavernRoot) {
+    const composeText = getDockerComposeText(sillyTavernRoot);
+    const candidates = [
+        path.join(sillyTavernRoot, 'data'),
+        path.join(sillyTavernRoot, 'docker', 'data'),
+    ];
+
+    const mountMatches = composeText.matchAll(/(?:^|\s|["'])((?:\.{1,2}\/|\/)?[^"'#\s]+?)\s*:\s*\/home\/node\/app\/data(?::|["'\s]|$)/gm);
+    for (const match of mountMatches) {
+        const hostPath = String(match[1] || '').trim();
+        if (hostPath) {
+            candidates.push(path.resolve(sillyTavernRoot, hostPath));
+        }
+    }
+
+    return Array.from(new Set(candidates.map((candidate) => path.resolve(candidate))));
+}
+
 function getLegacyExtensionTargetDirs(sillyTavernRoot) {
     const targets = [
         path.join(
@@ -43,14 +65,18 @@ function getLegacyExtensionTargetDirs(sillyTavernRoot) {
 }
 
 function getUserBaseDirs(sillyTavernRoot) {
-    const dataDir = path.join(sillyTavernRoot, 'data');
-    if (!fs.existsSync(dataDir) || !fs.statSync(dataDir).isDirectory()) {
-        return [];
+    const userBaseDirs = [];
+    for (const dataDir of getDataRootCandidates(sillyTavernRoot).filter(isDirectory)) {
+        userBaseDirs.push(...getUserBaseDirsInDataRoot(dataDir));
     }
 
+    return Array.from(new Set(userBaseDirs));
+}
+
+function getUserBaseDirsInDataRoot(dataDir) {
     return fs.readdirSync(dataDir)
         .map((entry) => path.join(dataDir, entry))
-        .filter((entryPath) => fs.existsSync(entryPath) && fs.statSync(entryPath).isDirectory())
+        .filter(isDirectory)
         .filter((entryPath) => {
             return fs.existsSync(path.join(entryPath, 'settings.json'))
                 || fs.existsSync(path.join(entryPath, 'extensions'))

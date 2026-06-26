@@ -7,6 +7,15 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-06-26
+
+### Fixed
+
+- Installer and uninstaller now detect wrapper directories whose real SillyTavern root is nested under `docker/`, so plugins and config are written to `docker/plugins` and `docker/config/config.yaml` in that layout. Root detection accepts either SillyTavern source-root files or the install-directory signals `plugins` / `data` / `config`. The installer also keeps the classic `data/<user>/extensions/chat-vault` path and supports `docker/data/<user>/` plus docker-compose host paths mounted to `/home/node/app/data` as additional user-data targets. Existing classic installs are not migrated or replaced; when multiple user data roots exist, the extension is installed into each one.
+- Deleting the final local backup in a chat scope now removes the empty scope directory, matching alias bindings, and the rebuilt global `scopes-index.json` entry.
+- The disaster recovery tab now has a `Clean Empty` action for old 0-backup scope shells left by earlier versions.
+- Reading `/snapshot/list` is now side-effect free for missing scopes, so simply refreshing the panel no longer recreates empty scope directories.
+
 ## [0.3.0] - 2026-05-28
 
 ### Added

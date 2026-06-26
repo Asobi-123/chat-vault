@@ -34,9 +34,28 @@ If the installer sees multiple valid targets in an interactive terminal, it shou
 Check these points:
 
 - the front-end extension exists under `data/<user>/extensions/chat-vault`
+- for Docker data layouts, also check `docker/data/<user>/extensions/chat-vault` or the host path mounted to `/home/node/app/data`
 - if your install falls back, check `public/scripts/extensions/third-party/chat-vault`
 - SillyTavern was fully reloaded after installation
 - the drawer entry exists under extension settings
+
+If your deployment stores the whole SillyTavern tree under a `docker/` child directory, check these paths instead:
+
+- `docker/plugins/chat-vault`
+- `docker/config/config.yaml`
+- `docker/data/<user>/extensions/chat-vault`
+
+## Disaster Recovery Shows Empty 0-Backup Records
+
+Open the `灾难恢复` tab and click `清理空记录`.
+
+That action removes only empty Chat Vault scopes:
+
+- no backup entries
+- no unsaved edit mirror
+- no leftover snapshot files
+
+It also removes matching scope aliases and rebuilds the global scope index.
 
 ## No Backups Are Being Created
 

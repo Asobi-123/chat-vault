@@ -50,7 +50,10 @@ node install.mjs
 ## 安装脚本会做什么
 
 - 自动定位 SillyTavern 根目录
+- 兼容真实 SillyTavern 根目录在 `docker/` 子目录里的安装方式；这种布局会把 server plugin 装到 `docker/plugins/chat-vault`，并更新 `docker/config/config.yaml`
+- 根目录检测既支持 SillyTavern 源码文件，也支持 `plugins` / `data` / `config` 这类安装目录信号
 - 优先复制前端扩展到 `data/<user>/extensions/chat-vault`
+- 兼容 Docker 数据目录布局，也会识别 `docker/data/<user>` 和 docker-compose 挂载到 `/home/node/app/data` 的宿主机目录
 - 复制 server plugin 到 `plugins/chat-vault`
 - 自动把生效配置文件里的 `enableServerPlugins` 改成 `true`，优先使用 `config/config.yaml`，否则回退到根目录 `config.yaml`
 - 清掉同名旧安装残留
@@ -99,7 +102,9 @@ node uninstall.mjs /path/to/SillyTavern
 ### 安装位置
 
 - 前端扩展：`data/<user>/extensions/chat-vault`
+- Docker 数据目录兼容：`docker/data/<user>/extensions/chat-vault`
 - Server Plugin：`plugins/chat-vault`
+- 如果真实 SillyTavern 根目录在 `docker/` 子目录下：`docker/plugins/chat-vault`
 
 ### 运行数据位置
 
@@ -150,6 +155,11 @@ node install.mjs
 
 当前聊天页显示的是当前聊天线下的备份。
 灾难恢复页显示的是独立于当前聊天打开状态的全局聊天线列表，适合原聊天文件损坏、打不开或记不清原聊天名时使用。
+
+**Q：灾难恢复里有 0 条备份的空记录怎么办？**
+
+在 **灾难恢复** 页点击 `清理空记录`。
+它只删除没有备份、没有未保存编辑、没有残留快照文件的空聊天线。
 
 **Q：云保险库是实时同步吗？**
 

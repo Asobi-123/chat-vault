@@ -13,14 +13,51 @@ const KNOWN_DIR_NAMES = [
     'st',
 ];
 
+const NESTED_ROOT_DIR_NAMES = [
+    'docker',
+];
+
 function isDirectory(targetPath) {
     return fs.existsSync(targetPath) && fs.statSync(targetPath).isDirectory();
 }
 
 export function isSillyTavernRoot(targetPath) {
-    return isDirectory(targetPath)
-        && fs.existsSync(path.join(targetPath, 'public', 'script.js'))
+    return getSillyTavernRootScore(targetPath) >= 2;
+}
+
+function getSillyTavernRootScore(targetPath) {
+    if (!isDirectory(targetPath)) {
+        return 0;
+    }
+
+    const hasSourceRootFiles = fs.existsSync(path.join(targetPath, 'public', 'script.js'))
         && fs.existsSync(path.join(targetPath, 'src', 'plugin-loader.js'));
+    if (hasSourceRootFiles) {
+        return 3;
+    }
+
+    const installRootSignals = [
+        isDirectory(path.join(targetPath, 'plugins')),
+        isDirectory(path.join(targetPath, 'data')),
+        isDirectory(path.join(targetPath, 'config')),
+    ].filter(Boolean).length;
+
+    return installRootSignals;
+}
+
+function findNestedSillyTavernRoot(targetPath) {
+    if (!isDirectory(targetPath)) {
+        return '';
+    }
+
+    for (const name of NESTED_ROOT_DIR_NAMES) {
+        const nestedPath = path.join(targetPath, name);
+        if (isSillyTavernRoot(nestedPath)) {
+            return nestedPath;
+        }
+    }
+
+    return '';
 }
 
 function uniquePaths(paths) {
@@ -33,17 +70,18 @@ function addCandidate(candidateMap, targetPath, reason) {
     }
 
     const resolved = path.resolve(targetPath);
-    if (!isSillyTavernRoot(resolved)) {
+    const rootPath = isSillyTavernRoot(resolved) ? resolved : findNestedSillyTavernRoot(resolved);
+    if (!rootPath) {
         return;
     }
 
-    const canonicalPath = fs.realpathSync.native(resolved);
+    const canonicalPath = fs.realpathSync.native(rootPath);
 
     const current = candidateMap.get(canonicalPath) || {
         path: canonicalPath,
         reasons: new Set(),
     };
-    current.reasons.add(reason);
+    current.reasons.add(rootPath === resolved ? reason : `${reason} 的嵌套 docker 目录`);
     candidateMap.set(canonicalPath, current);
 }
 
@@ -141,7 +179,7 @@ function discoverSillyTavernRoots(scriptDirectory, cwd) {
 
 function buildExplicitPathError(rawInput) {
     const resolved = path.resolve(rawInput);
-    return `指定的 SillyTavern 根目录无效：${resolved}`;
+    return `指定的 SillyTavern 根目录无效：${resolved}。请确认该目录或它的 docker 子目录包含 SillyTavern 源码根文件，或至少包含 plugins/data/config 这类可安装目录。`;
 }
 
 function buildMissingPathError(scriptDirectory, cwd, scriptName) {
@@ -202,23 +240,27 @@ export async function resolveSillyTavernRoot({
     const preferredInput = String(explicitInput || envInput || '').trim();
     if (preferredInput) {
         const resolved = path.resolve(preferredInput);
-        if (!isSillyTavernRoot(resolved)) {
+        const nestedRoot = findNestedSillyTavernRoot(resolved);
+        const root = isSillyTavernRoot(resolved) ? resolved : nestedRoot;
+        if (!root) {
             throw new Error(buildExplicitPathError(preferredInput));
         }
 
         return {
-            root: resolved,
+            root,
             detectionMode: explicitInput ? 'argument' : 'environment',
-            candidates: [{ path: resolved, reasons: ['手动指定'] }],
+            candidates: [{ path: root, reasons: [root === resolved ? '手动指定' : '手动指定路径的嵌套 docker 目录'] }],
         };
     }
 
     const resolvedCwd = path.resolve(cwd);
-    if (isSillyTavernRoot(resolvedCwd)) {
+    const nestedCwdRoot = findNestedSillyTavernRoot(resolvedCwd);
+    const cwdRoot = isSillyTavernRoot(resolvedCwd) ? resolvedCwd : nestedCwdRoot;
+    if (cwdRoot) {
         return {
-            root: resolvedCwd,
+            root: cwdRoot,
             detectionMode: 'cwd',
-            candidates: [{ path: resolvedCwd, reasons: ['当前目录'] }],
+            candidates: [{ path: cwdRoot, reasons: [cwdRoot === resolvedCwd ? '当前目录' : '当前目录的嵌套 docker 目录'] }],
         };
     }
 

@@ -322,6 +322,27 @@ function saveAliases(baseDirectory, aliases) {
     writeJsonAtomic(getAliasesPath(baseDirectory), aliases);
 }
 
+function removeAliasesForScope(baseDirectory, scopeId) {
+    const normalizedScopeId = asString(scopeId).trim();
+    if (!normalizedScopeId) {
+        return 0;
+    }
+
+    const aliases = readAliases(baseDirectory);
+    let removed = 0;
+    for (const [aliasKey, entry] of Object.entries(aliases.aliases)) {
+        if (asString(entry?.scopeId).trim() === normalizedScopeId) {
+            delete aliases.aliases[aliasKey];
+            removed += 1;
+        }
+    }
+
+    if (removed > 0) {
+        saveAliases(baseDirectory, aliases);
+    }
+    return removed;
+}
+
 function buildEmptyScopesIndex() {
     return {
         version: 1,
@@ -581,6 +602,39 @@ function getScopePaths(request, source) {
     return getScopePathsFromBaseDirectory(getBaseDirectory(request), source);
 }
 
+function getExistingScopePathsFromBaseDirectory(baseDirectory, rawSource) {
+    const scopesRoot = path.join(baseDirectory, 'scopes');
+    if (!fs.existsSync(scopesRoot)) {
+        return null;
+    }
+
+    const source = normalizeSource(rawSource);
+    const aliases = readAliases(baseDirectory);
+    const scopeId = findScopeIdByDescriptor(scopesRoot, aliases, source);
+    if (!scopeId) {
+        return null;
+    }
+
+    const resolvedSource = {
+        ...source,
+        scopeKey: scopeId,
+    };
+    const scopeDirectory = findExistingScopeDirectory(scopesRoot, resolvedSource);
+    if (!scopeDirectory) {
+        return null;
+    }
+
+    return {
+        baseDirectory,
+        scopesRoot,
+        source: resolvedSource,
+        scopeDirectory,
+        snapshotsDirectory: path.join(scopeDirectory, 'snapshots'),
+        indexPath: path.join(scopeDirectory, INDEX_FILE_NAME),
+        draftPath: path.join(scopeDirectory, DRAFT_FILE_NAME),
+    };
+}
+
 function listScopeDirectories(scopesRoot) {
     if (!fs.existsSync(scopesRoot)) {
         return [];
@@ -665,6 +719,84 @@ function rebuildScopesIndex(baseDirectory, scopesRoot) {
 
     saveScopesIndex(baseDirectory, scopesIndex);
     return scopesIndex;
+}
+
+function cleanupEmptyScope(baseDirectory, paths, index) {
+    const hasEntries = asArray(index?.entries).some((entry) => asString(entry?.id).trim());
+    const hasDraft = fs.existsSync(paths.draftPath);
+    const snapshotFiles = fs.existsSync(paths.snapshotsDirectory)
+        ? fs.readdirSync(paths.snapshotsDirectory, { withFileTypes: true }).filter((entry) => entry.isFile()).length
+        : 0;
+    if (hasEntries || hasDraft || snapshotFiles > 0) {
+        rebuildScopesIndex(baseDirectory, paths.scopesRoot);
+        return {
+            removed: false,
+            removedAliases: 0,
+        };
+    }
+
+    const scopeId = asString(paths.source?.scopeKey).trim()
+        || path.basename(paths.scopeDirectory).split('__').pop()
+        || '';
+    let removedAliases = 0;
+    if (scopeId) {
+        removedAliases = removeAliasesForScope(baseDirectory, scopeId);
+    }
+
+    try {
+        fs.rmSync(paths.scopeDirectory, { recursive: true, force: true });
+    } catch (error) {
+        console.warn('[chat-vault] Failed to remove empty scope directory:', paths.scopeDirectory, error);
+    }
+    rebuildScopesIndex(baseDirectory, paths.scopesRoot);
+
+    return {
+        removed: true,
+        removedAliases,
+    };
+}
+
+function cleanupEmptyScopes(baseDirectory) {
+    const scopesRoot = ensureDirectory(path.join(baseDirectory, 'scopes'));
+    let removedScopes = 0;
+    let removedAliases = 0;
+
+    for (const scopeDirectory of listScopeDirectories(scopesRoot)) {
+        const indexPath = path.join(scopeDirectory, INDEX_FILE_NAME);
+        const index = readJson(indexPath, null);
+        const entries = asArray(index?.entries).filter((entry) => asString(entry?.id).trim());
+        const hasDraft = fs.existsSync(path.join(scopeDirectory, DRAFT_FILE_NAME));
+        const snapshotsDirectory = path.join(scopeDirectory, 'snapshots');
+        const snapshotFiles = fs.existsSync(snapshotsDirectory)
+            ? fs.readdirSync(snapshotsDirectory, { withFileTypes: true }).filter((entry) => entry.isFile()).length
+            : 0;
+        if (entries.length > 0 || hasDraft || snapshotFiles > 0) {
+            continue;
+        }
+
+        const source = asObject(index?.source);
+        const scopeId = asString(source.scopeKey).trim()
+            || path.basename(scopeDirectory).split('__').pop()
+            || '';
+        if (scopeId) {
+            removedAliases += removeAliasesForScope(baseDirectory, scopeId);
+        }
+
+        try {
+            fs.rmSync(scopeDirectory, { recursive: true, force: true });
+            removedScopes += 1;
+        } catch (error) {
+            console.warn('[chat-vault] Failed to remove empty scope directory:', scopeDirectory, error);
+        }
+    }
+
+    const scopesIndex = rebuildScopesIndex(baseDirectory, scopesRoot);
+    return {
+        removedScopes,
+        removedAliases,
+        generatedAt: scopesIndex.generatedAt,
+        scopes: scopesIndex.scopes,
+    };
 }
 
 function normalizeMaxAutoSnapshots(value) {
@@ -4410,7 +4542,12 @@ export async function init(router) {
                 return response.send({ ok: true, source, draft: null, entries: [] });
             }
 
-            const paths = getScopePaths(request, source);
+            const baseDirectory = getBaseDirectory(request);
+            const paths = getExistingScopePathsFromBaseDirectory(baseDirectory, source);
+            if (!paths) {
+                return response.send({ ok: true, source, draft: null, entries: [] });
+            }
+
             return response.send(buildListResponse(paths, paths.source));
         } catch (error) {
             console.error('[chat-vault] Failed to list snapshots:', error);
@@ -4435,6 +4572,24 @@ export async function init(router) {
         } catch (error) {
             console.error('[chat-vault] Failed to list global scopes:', error);
             return response.status(500).send({ ok: false, error: 'failed_to_list_scopes' });
+        }
+    });
+
+    router.post('/scope/cleanup-empty', (request, response) => {
+        if (!assertUser(request, response)) {
+            return;
+        }
+
+        try {
+            const baseDirectory = getBaseDirectory(request);
+            const result = cleanupEmptyScopes(baseDirectory);
+            return response.send({
+                ok: true,
+                ...result,
+            });
+        } catch (error) {
+            console.error('[chat-vault] Failed to clean empty scopes:', error);
+            return response.status(500).send({ ok: false, error: 'failed_to_clean_empty_scopes' });
         }
     });
 
@@ -4600,11 +4755,13 @@ export async function init(router) {
             deleteFileSafe(path.join(paths.snapshotsDirectory, entry.snapshotFile));
             index.entries = index.entries.filter((item) => item.id !== snapshotId);
             saveIndex(paths, index);
+            const cleanup = cleanupEmptyScope(getBaseDirectory(request), paths, index);
 
             return response.send({
                 ok: true,
                 deleted: true,
                 snapshotId,
+                cleanup,
             });
         } catch (error) {
             console.error('[chat-vault] Failed to delete snapshot:', error);

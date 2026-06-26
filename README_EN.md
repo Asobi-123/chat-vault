@@ -50,7 +50,10 @@ node install.mjs
 ## What The Installer Does
 
 - auto-detect the SillyTavern root directory
+- support wrapper layouts where the real SillyTavern root is nested under `docker/`; in that case, the server plugin is installed into `docker/plugins/chat-vault` and `docker/config/config.yaml` is updated
+- root detection accepts either SillyTavern source-root files or install-directory signals such as `plugins` / `data` / `config`
 - prefer installing the front-end extension into `data/<user>/extensions/chat-vault`
+- support Docker data layouts by also scanning `docker/data/<user>` and docker-compose host paths mounted to `/home/node/app/data`
 - install the server plugin into `plugins/chat-vault`
 - set `enableServerPlugins: true` in the active config file, preferring `config/config.yaml` and falling back to root `config.yaml`
 - clean same-name leftovers before reinstall
@@ -99,7 +102,9 @@ It does not automatically delete existing backup data under `user/files/chat-vau
 ### Install locations
 
 - Front-end extension: `data/<user>/extensions/chat-vault`
+- Docker data layout fallback: `docker/data/<user>/extensions/chat-vault`
 - Server plugin: `plugins/chat-vault`
+- If the real SillyTavern root is nested under `docker/`: `docker/plugins/chat-vault`
 
 ### Runtime data
 
@@ -150,6 +155,11 @@ Direct filesystem renames do not trigger that binding logic.
 
 The current-chat page shows backups for the currently active chat line.
 The disaster recovery page shows a global scope list independent from the current chat being open, which is useful when the original chat file is broken, missing, or hard to identify.
+
+**Q: What should I do with 0-backup empty records in Disaster Recovery?**
+
+Use `Clean Empty` in the **Disaster Recovery** tab.
+It only removes empty chat scopes with no backups, no unsaved edit mirror, and no leftover snapshot files.
 
 **Q: Is Cloud Vault real-time sync?**
 

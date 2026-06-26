@@ -23,6 +23,27 @@ Expected:
 - If multiple nearby SillyTavern directories exist, the installer asks which one to use.
 - the active config file is updated to enable server plugins, usually `config/config.yaml` and otherwise root `config.yaml`.
 
+## 1A. Installer Docker Layout Compatibility
+
+Steps:
+
+1. Test a classic layout with `data/default-user/settings.json`.
+2. Test an install-root layout that has `plugins/`, `data/`, and `config/` but does not include SillyTavern source-root marker files.
+3. Test a root layout with Docker-mounted user data at `docker/data/default-user/settings.json`.
+4. Test a wrapper layout where the path passed to the installer contains a full SillyTavern root under `docker/`.
+5. Test a wrapper layout where `docker/` has `plugins/`, `data/`, and `config/` but no source-root marker files.
+6. Test a mixed layout where both `data/default-user` and `docker/data/default-user` exist under the same root.
+7. Run `node install.mjs /path/to/SillyTavern` for each layout.
+
+Expected:
+
+- Classic layout installs the front-end extension into `data/default-user/extensions/chat-vault`.
+- Install-root layout is accepted when `plugins` / `data` / `config` signals are present.
+- Docker-mounted user data layout installs the front-end extension into `docker/data/default-user/extensions/chat-vault` or the compose-mounted `/home/node/app/data` host directory.
+- Wrapper layout resolves the effective SillyTavern root to `docker/`, installs the server plugin into `docker/plugins/chat-vault`, and updates `docker/config/config.yaml`.
+- Mixed layout installs into both user data locations instead of replacing one with the other.
+- In non-wrapper layouts, the server plugin still installs into `plugins/chat-vault` under the detected root.
+
 ## 2. Backend Ready And Panel Entry
 
 Steps:
@@ -119,6 +140,8 @@ Steps:
 3. Search for a known character or chat.
 4. Open one scope and preview a backup.
 5. Restore one backup as a new chat.
+6. Delete the last backup in a disposable scope, then refresh the recovery list.
+7. If old 0-backup shells exist, click `清理空记录`.
 
 Expected:
 
@@ -126,6 +149,8 @@ Expected:
 - Search works across known chat labels.
 - Preview shows the selected backup contents.
 - Restore-as-new creates a new chat successfully.
+- Deleting the last local backup removes the empty scope from the recovery list.
+- `清理空记录` removes old empty scope shells without touching scopes that still contain backups, draft mirrors, or snapshot files.
 
 ## 9. Chat Rename Continuity
 

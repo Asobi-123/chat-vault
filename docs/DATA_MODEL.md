@@ -269,6 +269,8 @@ Message lines are copied from the active SillyTavern chat array at snapshot time
 - Global recovery depends on Chat Vault's own storage tree, not on the original chat file still existing
 - Restore-as-new uses the stored snapshot file contents
 - Overwrite-current is only enabled from the active current-chat view, not from the global recovery view
+- Reading snapshot status for a missing scope does not create a new empty scope directory
+- Empty scope cleanup removes only scopes with no backup entries, no `draft.json`, and no snapshot files; matching aliases are removed and `scopes-index.json` is rebuilt
 
 ## Cloud Vault Marker
 

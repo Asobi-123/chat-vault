@@ -184,6 +184,17 @@ This allows browsing backups even when the current chat cannot be opened normall
 The cloud sync layer uses its own workspace under `user/files/chat-vault/cloud/`.
 It never turns the live SillyTavern `data/` tree into a shared Git repository.
 
+### Installer root detection accepts deployed layouts
+
+The installer resolves an effective SillyTavern root before copying files.
+It accepts either source-root markers or deployed install-directory signals:
+
+- source-root markers: `public/script.js` plus `src/plugin-loader.js`
+- install-directory signals: at least two of `plugins/`, `data/`, and `config/`
+
+If the path passed to the installer is a wrapper directory and its `docker/` child matches those rules, the effective root becomes `docker/`.
+That means plugin and config writes go to `docker/plugins/` and `docker/config/`, while user extension targets are discovered from that effective root's data directories.
+
 ### Cloud retention is append-only by default
 
 Cloud sync no longer infers remote deletion from one device's current local state.

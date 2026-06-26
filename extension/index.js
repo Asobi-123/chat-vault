@@ -221,6 +221,7 @@ function buildPanelHtml() {
                         <div class="${getCardBodyClass('recovery_overview')}" data-cvt-section="recovery_overview">
                             <div class="cvt-toolbar">
                                 <button id="cvt_scope_refresh" type="button" class="menu_button">${t('recovery.refreshList')}</button>
+                                <button id="cvt_scope_cleanup_empty" type="button" class="menu_button">${t('recovery.cleanupEmpty')}</button>
                                 <button id="cvt_back_to_chat" type="button" class="menu_button" hidden>${t('recovery.backToChat')}</button>
                             </div>
                             <div class="cvt-field" style="margin-top:10px;">
@@ -1689,6 +1690,20 @@ async function refreshRecoveryScopes({ quiet = false } = {}) {
     }
 }
 
+async function cleanupEmptyRecoveryScopes() {
+    const result = await callApi('/scope/cleanup-empty', {});
+    recoveryScopeCache = Array.isArray(result.scopes) ? result.scopes : [];
+    if (activeScopeOverride) {
+        const stillExists = recoveryScopeCache.some((scope) => areSourcesEquivalent(scope.source, activeScopeOverride));
+        if (!stillExists) {
+            activeScopeOverride = null;
+        }
+    }
+    renderRecoveryScopeList();
+    renderRecoveryStatus(activeScopeOverride ? statusCache : null);
+    toastr.success(t('recovery.cleanupEmptyDone', { count: result.removedScopes || 0 }), getAppTitle());
+}
+
 async function openRecoveryScope(scopeId) {
     const scope = recoveryScopeCache.find((item) => item.scopeId === scopeId);
     if (!scope?.source) {
@@ -2795,10 +2810,18 @@ async function deleteSnapshot(snapshotId) {
         return;
     }
 
-    await callApi('/snapshot/delete', {
+    const result = await callApi('/snapshot/delete', {
         source,
         snapshotId,
     });
+
+    await refreshRecoveryScopes({ quiet: true });
+    if (result?.cleanup?.removed && activeScopeOverride && areSourcesEquivalent(source, activeScopeOverride)) {
+        activeScopeOverride = null;
+        statusCache = null;
+        renderRecoveryStatus(null);
+        return;
+    }
 
     await refreshStatus({ quiet: true });
 }
@@ -3595,6 +3618,15 @@ function attachDomListeners() {
 
     $(document).on('click', '#cvt_scope_refresh', async () => {
         await refreshRecoveryScopes();
+    });
+
+    $(document).on('click', '#cvt_scope_cleanup_empty', async () => {
+        try {
+            await cleanupEmptyRecoveryScopes();
+        } catch (error) {
+            console.error('[chat-vault] Failed to clean empty recovery scopes:', error);
+            toastr.error(t('recovery.cleanupEmptyFailed'), getAppTitle());
+        }
     });
 
     $(document).on('click', '#cvt_cloud_save_config', async () => {
