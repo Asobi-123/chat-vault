@@ -7,6 +7,13 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-07-08
+
+### Security
+
+- The GitHub token is no longer written into the cloud repository's `.git/config`. Previous versions baked the token into the remote URL (`https://x-access-token:<token>@github.com/...`), so it was persisted to disk on every sync. The stored remote URL is now always token-free, and authentication is supplied per Git invocation through a process-level `-c http.<url>.extraHeader` override that never touches the Git config. The token's only resting place is `cloud-config.json`, which the user controls.
+- `ensureCloudRepositoryReady` now rewrites any legacy `x-access-token:...@` credentials already baked into a remote URL back to the clean URL on the next sync, so an already-polluted `.git/config` is migrated automatically without user action.
+
 ## [0.3.2] - 2026-06-26
 
 ### Fixed

@@ -1397,14 +1397,36 @@ function buildCloudGitIdentity(config) {
     };
 }
 
-function buildCloudAuthenticatedRepoUrl(config) {
+// Returns the remote URL that gets stored in .git/config. This is deliberately
+// token-free: the URL is persisted to disk, so embedding the token here would
+// leak it. Authentication is supplied per-invocation via buildCloudGitAuthArgs().
+// We also strip any legacy `x-access-token:...@` credentials that older versions
+// baked into the URL, so a single sync migrates an already-polluted remote.
+function buildCloudCleanRepoUrl(config) {
     const repoUrl = asString(config.repoUrl).trim();
-    const token = asString(config.githubToken).trim();
-    if (!repoUrl || !token || !repoUrl.startsWith('https://') || repoUrl.includes('@')) {
+    if (!repoUrl || !repoUrl.startsWith('https://') || !repoUrl.includes('@')) {
         return repoUrl;
     }
 
-    return repoUrl.replace('https://', `https://x-access-token:${encodeURIComponent(token)}@`);
+    // Drop the userinfo component (everything between https:// and the first @).
+    return repoUrl.replace(/^https:\/\/[^/@]*@/, 'https://');
+}
+
+// Builds process-level `git -c` args that inject the GitHub token as an HTTP
+// Authorization header for the current invocation only. Nothing is written to
+// .git/config. Returns [] when there is no usable token/URL, in which case git
+// falls back to its normal credential resolution.
+function buildCloudGitAuthArgs(config) {
+    const repoUrl = buildCloudCleanRepoUrl(config);
+    const token = asString(config.githubToken).trim();
+    if (!repoUrl || !token || !repoUrl.startsWith('https://')) {
+        return [];
+    }
+
+    const basic = Buffer.from(`x-access-token:${token}`, 'utf8').toString('base64');
+    // Scope the header to this exact remote URL so the token is only ever sent
+    // to the configured host, not to any other URL git might touch.
+    return ['-c', `http.${repoUrl}.extraHeader=Authorization: Basic ${basic}`];
 }
 
 function buildCloudMarker(config, existingMarker = null) {
@@ -2039,9 +2061,12 @@ async function withCloudRepoOperationLock(repoPath, task) {
     }
 }
 
-function runGit(args, { cwd, allowFailure = false } = {}) {
+function runGit(args, { cwd, allowFailure = false, configArgs = [] } = {}) {
     return new Promise((resolve, reject) => {
-        const child = spawn('git', args, {
+        // configArgs (e.g. ['-c', 'http.extraHeader=...']) are process-level `git -c`
+        // overrides that must precede the subcommand. They are never written to
+        // .git/config, so secrets passed this way do not persist to disk.
+        const child = spawn('git', [...configArgs, ...args], {
             cwd,
             env: {
                 ...process.env,
@@ -2120,10 +2145,11 @@ async function readGitRevision(repoPath, refName) {
     return result.ok ? result.stdout.trim() : '';
 }
 
-async function readRemoteBranchRevision(repoPath, branch) {
+async function readRemoteBranchRevision(repoPath, branch, authArgs = []) {
     const result = await runGit(['ls-remote', '--heads', 'origin', branch], {
         cwd: repoPath,
         allowFailure: true,
+        configArgs: authArgs,
     });
     if (!result.ok) {
         return '';
@@ -2133,14 +2159,14 @@ async function readRemoteBranchRevision(repoPath, branch) {
     return line.split(/\s+/)[0] || '';
 }
 
-async function remoteBranchMatchesLocalHead(repoPath, branch) {
+async function remoteBranchMatchesLocalHead(repoPath, branch, authArgs = []) {
     const localHead = await readGitRevision(repoPath, 'HEAD');
     if (!localHead) {
         return false;
     }
 
     for (let attempt = 0; attempt < 2; attempt += 1) {
-        const remoteHead = await readRemoteBranchRevision(repoPath, branch);
+        const remoteHead = await readRemoteBranchRevision(repoPath, branch, authArgs);
         if (remoteHead && remoteHead === localHead) {
             return true;
         }
@@ -2152,16 +2178,16 @@ async function remoteBranchMatchesLocalHead(repoPath, branch) {
     return false;
 }
 
-async function pushCloudBranch(cloudPaths, branch) {
+async function pushCloudBranch(cloudPaths, branch, authArgs = []) {
     try {
-        await runGit(['push', '-u', 'origin', branch], { cwd: cloudPaths.repoPath });
+        await runGit(['push', '-u', 'origin', branch], { cwd: cloudPaths.repoPath, configArgs: authArgs });
         return;
     } catch (error) {
         if (isCloudTransientPushError(error) && isCloudAlreadyUpToDateMessage(error)) {
             return;
         }
         if ((isCloudTransientPushError(error) || isCloudNonFastForwardError(error))
-            && await remoteBranchMatchesLocalHead(cloudPaths.repoPath, branch)) {
+            && await remoteBranchMatchesLocalHead(cloudPaths.repoPath, branch, authArgs)) {
             return;
         }
         throw error;
@@ -2181,7 +2207,11 @@ async function ensureCloudRepositoryReady(baseDirectory, config) {
     await runGit(['config', 'user.email', identity.email], { cwd: cloudPaths.repoPath });
     await runGit(['config', 'pull.rebase', 'false'], { cwd: cloudPaths.repoPath });
 
-    const remoteUrl = buildCloudAuthenticatedRepoUrl(config);
+    // The persisted remote URL is always token-free. If an older version baked a
+    // token into it, buildCloudCleanRepoUrl strips it, so this set-url migrates a
+    // polluted .git/config back to a clean URL on the next sync.
+    const authArgs = buildCloudGitAuthArgs(config);
+    const remoteUrl = buildCloudCleanRepoUrl(config);
     const remoteCheck = await runGit(['remote', 'get-url', 'origin'], {
         cwd: cloudPaths.repoPath,
         allowFailure: true,
@@ -2192,8 +2222,8 @@ async function ensureCloudRepositoryReady(baseDirectory, config) {
         await runGit(['remote', 'set-url', 'origin', remoteUrl], { cwd: cloudPaths.repoPath });
     }
 
-    await runGit(['fetch', '--prune', 'origin'], { cwd: cloudPaths.repoPath });
-    const remoteBranchCheck = await runGit(['ls-remote', '--heads', 'origin', config.branch], { cwd: cloudPaths.repoPath });
+    await runGit(['fetch', '--prune', 'origin'], { cwd: cloudPaths.repoPath, configArgs: authArgs });
+    const remoteBranchCheck = await runGit(['ls-remote', '--heads', 'origin', config.branch], { cwd: cloudPaths.repoPath, configArgs: authArgs });
     const remoteBranchExists = remoteBranchCheck.stdout.includes(`refs/heads/${config.branch}`);
 
     if (remoteBranchExists) {
@@ -2856,7 +2886,7 @@ async function pushCloudSelectionToRemote(baseDirectory, directories) {
                     throw new Error(commitResult.stderr || 'failed to commit cloud sync');
                 }
 
-                await pushCloudBranch(cloudPaths, config.branch);
+                await pushCloudBranch(cloudPaths, config.branch, buildCloudGitAuthArgs(config));
                 saveCloudConfig(baseDirectory, {
                     ...config,
                     lastPulledAt: Date.now(),
@@ -3756,7 +3786,7 @@ async function deleteRemoteCloudSnapshot(baseDirectory, scopeId, snapshotId) {
             if (!commitResult.ok && !commitResult.stderr.toLowerCase().includes('nothing to commit')) {
                 throw new Error(commitResult.stderr || 'failed to commit cloud delete');
             }
-            await pushCloudBranch(cloudPaths, config.branch);
+            await pushCloudBranch(cloudPaths, config.branch, buildCloudGitAuthArgs(config));
         }
 
         saveCloudConfig(baseDirectory, {

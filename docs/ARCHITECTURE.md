@@ -49,7 +49,7 @@ The goal is to keep backup and recovery logic independent from the current chat 
 
 ### 5. Git cloud vault
 
-1. The front-end opens the cloud tab and saves repository config into the server-side user directory.
+1. The front-end opens the cloud tab and saves repository config into the server-side user directory. The GitHub token lives only in that `cloud-config.json`; it is never written into the cloud repository's `.git/config`.
 2. A manual sync asks the server plugin to scan local Chat Vault data.
 3. The server plugin selects:
    - all long-term keep backups
@@ -183,6 +183,26 @@ This allows browsing backups even when the current chat cannot be opened normall
 
 The cloud sync layer uses its own workspace under `user/files/chat-vault/cloud/`.
 It never turns the live SillyTavern `data/` tree into a shared Git repository.
+
+### The GitHub token is never persisted to `.git/config`
+
+The cloud remote URL stored in `.git/config` is always token-free (for example
+`https://github.com/<owner>/<repo>.git`). Authentication is supplied per Git
+invocation through a process-level `-c http.<url>.extraHeader=Authorization: Basic <base64>`
+override, which is passed on the command line for that one command and never
+written to disk. This keeps the token in exactly one place — the server-side
+`cloud-config.json` the user filled in — instead of duplicating it into the
+repository config where it would ride along with backups.
+
+Two supporting behaviors make this robust:
+
+- The `extraHeader` is scoped to the exact configured remote URL, so the token is only ever sent to that host.
+- `ensureCloudRepositoryReady` always rewrites the stored remote to the clean URL. If an older version baked `x-access-token:...@` credentials into the URL, the next sync strips them, migrating a polluted `.git/config` back to a clean state with no user action.
+
+In containerized deployments (the common case) there is no OS credential
+helper, so this header override is also the only path by which the token
+reaches Git — the same mechanism serves both the security goal and normal
+operation.
 
 ### Installer root detection accepts deployed layouts
 
