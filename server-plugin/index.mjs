@@ -10,6 +10,12 @@ import {
     parseCharaJson,
     stableStringify,
 } from './character-fingerprint.mjs';
+import {
+    pruneCloudSnapshotChunks,
+    readCloudSnapshotStorage,
+    readSnapshotFile as readSnapshotFileFromPath,
+    writeCloudSnapshotStorage,
+} from './cloud-snapshot.mjs';
 
 export const info = {
     id: 'chat-vault',
@@ -882,19 +888,7 @@ function snapshotToJsonl(snapshot) {
 }
 
 function readSnapshotFile(snapshotPath) {
-    if (!fs.existsSync(snapshotPath)) {
-        throw new Error(`Snapshot file not found: ${snapshotPath}`);
-    }
-
-    const rawText = fs.readFileSync(snapshotPath, 'utf8');
-    const lines = rawText.split('\n').filter((line) => line.trim().length > 0);
-    const snapshot = [];
-
-    for (const line of lines) {
-        snapshot.push(JSON.parse(line));
-    }
-
-    return snapshot;
+    return readSnapshotFileFromPath(snapshotPath);
 }
 
 function getSnapshotSummary(snapshot) {
@@ -1312,6 +1306,7 @@ function getCloudPaths(baseDirectory, rawConfig) {
     const objectsRoot = ensureDirectory(path.join(repoPath, CLOUD_OBJECTS_DIRECTORY_NAME));
     const metaRoot = ensureDirectory(path.join(objectsRoot, CLOUD_META_DIRECTORY_NAME));
     const snapshotsRoot = ensureDirectory(path.join(objectsRoot, CLOUD_SNAPSHOTS_DIRECTORY_NAME));
+    const snapshotChunksRoot = ensureDirectory(path.join(objectsRoot, 'snapshot-chunks'));
     const resourceMetaRoot = ensureDirectory(path.join(objectsRoot, CLOUD_RESOURCE_META_DIRECTORY_NAME));
     const resourceDataRoot = ensureDirectory(path.join(objectsRoot, CLOUD_RESOURCE_DATA_DIRECTORY_NAME));
     return {
@@ -1325,6 +1320,7 @@ function getCloudPaths(baseDirectory, rawConfig) {
         objectsRoot,
         metaRoot,
         snapshotsRoot,
+        snapshotChunksRoot,
         resourceMetaRoot,
         resourceDataRoot,
         deviceStatePath: path.join(devicesRoot, `${config.deviceId}.json`),
@@ -1370,6 +1366,19 @@ function getCloudObjectPaths(cloudPaths, scopeId, snapshotId) {
         metaRelativePath: path.relative(cloudPaths.repoPath, metaPath).replace(/\\/g, '/'),
         snapshotRelativePath: path.relative(cloudPaths.repoPath, snapshotPath).replace(/\\/g, '/'),
     };
+}
+
+function cloudSnapshotStorageExists(cloudPaths, objectPaths, storage) {
+    const normalizedStorage = asObject(storage);
+    if (normalizedStorage.format === 'chunked-gzip-v1') {
+        const chunks = asArray(normalizedStorage.chunks);
+        return chunks.length > 0 && chunks.every((chunk) => {
+            const hash = asString(asObject(chunk).hash).trim();
+            return /^[a-f0-9]{40}$/.test(hash)
+                && fs.existsSync(path.join(cloudPaths.snapshotChunksRoot, `${hash}.jsonl.gz`));
+        });
+    }
+    return fs.existsSync(objectPaths.snapshotPath);
 }
 
 function getCloudResourcePaths(cloudPaths, kind, hash, extension = '') {
@@ -1443,12 +1452,38 @@ function buildCloudMarker(config, existingMarker = null) {
 
 function buildCloudDeviceState(config, selection, existingState = null) {
     const previous = asObject(existingState);
-    const scopes = selection.scopes.map((scope) => ({
+    const scopeMap = new Map(selection.scopes.map((scope) => [scope.scopeId, {
         scopeId: scope.scopeId,
         label: scope.label,
         source: scope.source,
         snapshotIds: scope.entries.map((entry) => entry.snapshotId),
-    }));
+    }]));
+    const failedScopeIds = new Set(asArray(selection.skipped)
+        .map((item) => asString(asObject(item).scopeId).trim())
+        .filter(Boolean));
+
+    // A malformed or unreadable local snapshot must not withdraw an older
+    // successful cloud reference from this device's published selection.
+    for (const previousScope of asArray(previous.scopes)) {
+        const normalizedPrevious = asObject(previousScope);
+        const scopeId = asString(normalizedPrevious.scopeId).trim();
+        if (!scopeId || !failedScopeIds.has(scopeId)) {
+            continue;
+        }
+        const current = scopeMap.get(scopeId) || {
+            scopeId,
+            label: asString(normalizedPrevious.label).trim(),
+            source: asObject(normalizedPrevious.source),
+            snapshotIds: [],
+        };
+        current.snapshotIds = Array.from(new Set([
+            ...current.snapshotIds,
+            ...asArray(normalizedPrevious.snapshotIds).map((item) => asString(item).trim()).filter(Boolean),
+        ]));
+        scopeMap.set(scopeId, current);
+    }
+
+    const scopes = Array.from(scopeMap.values());
     const stableSeed = JSON.stringify({
         deviceName: config.deviceName,
         syncPinned: config.syncPinned,
@@ -2275,6 +2310,7 @@ function getLatestStableEntry(entries) {
 function collectLocalCloudSelection(baseDirectory, config, directories, cloudPaths = null) {
     const scopesRoot = ensureDirectory(path.join(baseDirectory, 'scopes'));
     const scopes = [];
+    const skipped = [];
     const streamingPersist = Boolean(cloudPaths);
     const selectionResources = streamingPersist ? null : new Map();
     const persistedResourceKeys = streamingPersist ? new Set() : null;
@@ -2319,55 +2355,66 @@ function collectLocalCloudSelection(baseDirectory, config, directories, cloudPat
         };
         const scopeEntries = [];
         for (const entry of selectedEntries.values()) {
-            const snapshotPath = path.join(scopeDirectory, 'snapshots', asString(entry.snapshotFile).trim());
-            if (!fs.existsSync(snapshotPath)) {
-                continue;
-            }
+            const snapshotFile = asString(entry.snapshotFile).trim();
+            const snapshotPath = path.join(scopeDirectory, 'snapshots', snapshotFile);
+            try {
+                if (!fs.existsSync(snapshotPath)) {
+                    throw new Error(`Local snapshot file is missing: ${snapshotFile || entry.id}`);
+                }
 
-            const snapshot = readSnapshotFile(snapshotPath);
-            const jsonl = snapshotToJsonl(snapshot);
-            const fingerprint = asString(entry.fingerprint).trim() || sha1(jsonl);
-            const snapshotId = buildCloudSnapshotId(scopeId, fingerprint);
-            let resourceBundle;
-            if (directories) {
+                const snapshot = readSnapshotFile(snapshotPath);
+                const jsonl = snapshotToJsonl(snapshot);
+                const fingerprint = asString(entry.fingerprint).trim() || sha1(jsonl);
+                const snapshotId = buildCloudSnapshotId(scopeId, fingerprint);
+                let resourceBundle;
+                if (directories) {
+                    if (streamingPersist) {
+                        resourceBundle = collectLocalSnapshotResourceBundle(directories, source, snapshot, (record) => {
+                            persistCloudResourceImmediately(cloudPaths, record, persistedResourceKeys);
+                        });
+                    } else {
+                        resourceBundle = collectLocalSnapshotResourceBundle(directories, source, snapshot);
+                        for (const resource of resourceBundle.resources) {
+                            selectionResources.set(`${resource.kind}:${resource.hash}`, resource);
+                        }
+                    }
+                } else {
+                    resourceBundle = { refs: [], resources: [] };
+                }
+
                 if (streamingPersist) {
-                    resourceBundle = collectLocalSnapshotResourceBundle(directories, source, snapshot, (record) => {
-                        persistCloudResourceImmediately(cloudPaths, record, persistedResourceKeys);
+                    persistCloudEntrySnapshot(cloudPaths, config, scopeView, {
+                        ...entry,
+                        scopeId,
+                        snapshotId,
+                        fingerprint,
+                        jsonl,
+                        resources: resourceBundle.refs,
+                    });
+                    scopeEntries.push({
+                        ...entry,
+                        scopeId,
+                        snapshotId,
+                        fingerprint,
+                        resources: resourceBundle.refs,
                     });
                 } else {
-                    resourceBundle = collectLocalSnapshotResourceBundle(directories, source, snapshot);
-                    for (const resource of resourceBundle.resources) {
-                        selectionResources.set(`${resource.kind}:${resource.hash}`, resource);
-                    }
+                    scopeEntries.push({
+                        ...entry,
+                        scopeId,
+                        snapshotId,
+                        fingerprint,
+                        jsonl,
+                        resources: resourceBundle.refs,
+                    });
                 }
-            } else {
-                resourceBundle = { refs: [], resources: [] };
-            }
-
-            if (streamingPersist) {
-                persistCloudEntrySnapshot(cloudPaths, config, scopeView, {
-                    ...entry,
+            } catch (error) {
+                skipped.push({
                     scopeId,
-                    snapshotId,
-                    fingerprint,
-                    jsonl,
-                    resources: resourceBundle.refs,
-                });
-                scopeEntries.push({
-                    ...entry,
-                    scopeId,
-                    snapshotId,
-                    fingerprint,
-                    resources: resourceBundle.refs,
-                });
-            } else {
-                scopeEntries.push({
-                    ...entry,
-                    scopeId,
-                    snapshotId,
-                    fingerprint,
-                    jsonl,
-                    resources: resourceBundle.refs,
+                    label: scopeView.label,
+                    localSnapshotId: asString(entry.id).trim(),
+                    snapshotFile,
+                    reason: truncate(error?.message || error, 260),
                 });
             }
         }
@@ -2390,6 +2437,8 @@ function collectLocalCloudSelection(baseDirectory, config, directories, cloudPat
         snapshotCount: scopes.reduce((sum, scope) => sum + scope.entries.length, 0),
         resources: streamingPersist ? [] : Array.from(selectionResources.values()),
         resourceCount: streamingPersist ? persistedResourceKeys.size : selectionResources.size,
+        skipped,
+        skippedCount: skipped.length,
     };
 }
 
@@ -2426,6 +2475,19 @@ function persistCloudEntrySnapshot(cloudPaths, config, scope, entry) {
     } else {
         mergedPublishers.push(currentPublisher);
     }
+    const previousFingerprint = asString(existingMeta?.fingerprint).trim();
+    const existingStorage = asObject(existingMeta?.snapshotStorage);
+    const shouldWriteSnapshot = !cloudSnapshotStorageExists(cloudPaths, objectPaths, existingStorage)
+        || previousFingerprint !== entry.fingerprint;
+    const snapshotStorage = shouldWriteSnapshot && typeof entry.jsonl === 'string' && entry.jsonl.length > 0
+        ? writeCloudSnapshotStorage({
+            repoPath: cloudPaths.repoPath,
+            snapshotPath: objectPaths.snapshotPath,
+            snapshotRelativePath: objectPaths.snapshotRelativePath,
+            chunksRoot: cloudPaths.snapshotChunksRoot,
+            jsonl: entry.jsonl,
+        })
+        : existingStorage;
     const nextMeta = {
         version: CLOUD_FORMAT_VERSION,
         scopeId: scope.scopeId,
@@ -2445,7 +2507,8 @@ function persistCloudEntrySnapshot(cloudPaths, config, scope, entry) {
         lastMessageName: asString(entry.lastMessageName),
         lastMessageAt: asString(entry.lastMessageAt),
         resources: mergedResources,
-        snapshotPath: objectPaths.snapshotRelativePath,
+        snapshotPath: snapshotStorage.format === 'chunked-gzip-v1' ? '' : objectPaths.snapshotRelativePath,
+        ...(Object.keys(snapshotStorage).length > 0 ? { snapshotStorage } : {}),
         publishedByDevices: mergedPublishers,
         publishedFrom: {
             deviceId: config.deviceId,
@@ -2454,8 +2517,6 @@ function persistCloudEntrySnapshot(cloudPaths, config, scope, entry) {
             lastUploadedAt: Date.now(),
         },
     };
-    const previousFingerprint = asString(existingMeta?.fingerprint).trim();
-    const snapshotExists = fs.existsSync(objectPaths.snapshotPath);
     const comparablePreviousMeta = existingMeta
         ? {
             ...existingMeta,
@@ -2483,11 +2544,6 @@ function persistCloudEntrySnapshot(cloudPaths, config, scope, entry) {
         },
     };
 
-    if (!snapshotExists || previousFingerprint !== entry.fingerprint) {
-        if (typeof entry.jsonl === 'string' && entry.jsonl.length > 0) {
-            writeTextAtomic(objectPaths.snapshotPath, entry.jsonl);
-        }
-    }
     if (JSON.stringify(comparablePreviousMeta) !== JSON.stringify(comparableNextMeta)) {
         writeJsonAtomic(objectPaths.metaPath, nextMeta);
     }
@@ -2861,6 +2917,7 @@ async function pushCloudSelectionToRemote(baseDirectory, directories) {
                 writeCloudMarker(cloudPaths, config);
                 const selection = collectLocalCloudSelection(baseDirectory, config, directories, cloudPaths);
                 writeCloudDeviceSelection(cloudPaths, config, selection);
+                pruneCloudSnapshotChunks(cloudPaths.snapshotChunksRoot, collectReferencedCloudSnapshotChunkHashes(cloudPaths));
                 const manifest = rebuildCloudManifest(cloudPaths);
 
                 if (!(await cloudRepositoryHasChanges(cloudPaths))) {
@@ -2951,7 +3008,11 @@ async function getRemoteCloudSnapshot(baseDirectory, scopeId, snapshotId) {
             throw new Error('cloud_snapshot_meta_not_found');
         }
 
-        const snapshot = readSnapshotFile(objectPaths.snapshotPath);
+        const snapshot = readCloudSnapshotStorage({
+            snapshotPath: objectPaths.snapshotPath,
+            chunksRoot: cloudPaths.snapshotChunksRoot,
+            storage: meta.snapshotStorage,
+        });
         const summary = getSnapshotSummary(snapshot);
         return {
             config,
@@ -3752,9 +3813,38 @@ function deleteCloudSnapshotArtifacts(cloudPaths, scopeId, snapshotId) {
     }
 }
 
+function collectReferencedCloudSnapshotChunkHashes(cloudPaths) {
+    const hashes = new Set();
+    if (!fs.existsSync(cloudPaths.metaRoot)) {
+        return hashes;
+    }
+
+    for (const scopeDirectory of fs.readdirSync(cloudPaths.metaRoot, { withFileTypes: true })) {
+        if (!scopeDirectory.isDirectory()) {
+            continue;
+        }
+        const scopePath = path.join(cloudPaths.metaRoot, scopeDirectory.name);
+        for (const fileName of fs.readdirSync(scopePath)) {
+            if (!fileName.endsWith('.json')) {
+                continue;
+            }
+            const storage = asObject(readJson(path.join(scopePath, fileName), null)?.snapshotStorage);
+            for (const chunk of asArray(storage.chunks)) {
+                const hash = asString(asObject(chunk).hash).trim();
+                if (/^[a-f0-9]{40}$/.test(hash)) {
+                    hashes.add(hash);
+                }
+            }
+        }
+    }
+
+    return hashes;
+}
+
 function cleanupCloudAfterExplicitDelete(cloudPaths) {
     const referencedMap = buildReferencedCloudSnapshotMapFromMetaRoot(cloudPaths);
     pruneCloudObjects(cloudPaths, referencedMap);
+    pruneCloudSnapshotChunks(cloudPaths.snapshotChunksRoot, collectReferencedCloudSnapshotChunkHashes(cloudPaths));
     pruneCloudResources(cloudPaths, buildReferencedCloudResourceMap(cloudPaths, referencedMap));
 }
 
@@ -5081,6 +5171,8 @@ export async function init(router) {
                 scopeCount: result.selection.scopeCount,
                 snapshotCount: result.selection.snapshotCount,
                 resourceCount: result.selection.resourceCount,
+                skippedCount: result.selection.skippedCount || 0,
+                skipped: result.selection.skipped || [],
             });
         } catch (error) {
             console.error('[chat-vault] Failed to push cloud selection:', error);

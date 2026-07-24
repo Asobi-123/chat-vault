@@ -79,6 +79,8 @@ chat-vault/
             snapshots/
               <scopeId>/
                 <snapshotId>.jsonl
+            snapshot-chunks/
+              <chunkSha1>.jsonl.gz
 ```
 
 ## Cloud Config File
@@ -379,6 +381,19 @@ Shape:
     }
   ],
   "snapshotPath": "objects/snapshots/<scopeId>/<snapshotId>.jsonl",
+  "snapshotStorage": {
+    "format": "chunked-gzip-v1",
+    "rawSize": 110100480,
+    "chunkSize": 8388608,
+    "chunks": [
+      {
+        "hash": "sha1...",
+        "rawSize": 8388608,
+        "compressedSize": 123456,
+        "path": "objects/snapshot-chunks/<chunkSha1>.jsonl.gz"
+      }
+    ]
+  },
   "publishedFrom": {
     "deviceId": "device-a1b2c3d4e5f6",
     "deviceName": "Mac mini",
@@ -387,6 +402,8 @@ Shape:
   }
 }
 ```
+
+`snapshotStorage` is optional for compatibility with earlier cloud backups. Missing it means the reader uses `snapshotPath` as a normal JSONL file. New snapshots larger than 40 MiB use `chunked-gzip-v1`: each physical Git object contains at most 8 MiB of uncompressed JSONL, is gzip-compressed independently, and is verified by SHA-1 before restore.
 
 ## Cloud Resource Objects
 
@@ -494,3 +511,4 @@ Notes:
 - the latest remote catalog is rebuilt from cloud snapshot metadata, not from `devices/*.json`
 - local deletion on one device does not silently remove older cloud snapshots
 - cloud cleanup happens only through explicit per-backup deletion
+- a failed local snapshot is omitted from that sync only; other selected snapshots continue, and the response reports its skip

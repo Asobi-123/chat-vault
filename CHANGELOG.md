@@ -7,6 +7,11 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Cloud Vault now stores cloud snapshots larger than 40 MiB as transparent gzip-compressed 8 MiB content-addressed chunks instead of a single Git blob. Restore, import, preview, and explicit cloud deletion understand the new format; existing `.jsonl` cloud snapshots remain readable without migration.
+- A broken or unreadable selected local snapshot no longer aborts the entire cloud sync. Other selected chats continue to push, the UI reports a partial result, and the device's prior cloud references for the failed scope are retained.
+
 ## [0.3.3] - 2026-07-08
 
 ### Security

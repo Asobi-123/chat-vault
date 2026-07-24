@@ -195,3 +195,4 @@ Before pushing or tagging a public release:
   - `install.mjs`
   - `uninstall.mjs`
   - `sillytavern-paths.mjs`
+- `node tests/cloud-snapshot.test.mjs` passes. It generates a disposable 100+ MiB JSONL fixture, verifies chunked cloud storage and restore, then commits and pushes the resulting small Git blobs to a temporary bare remote.

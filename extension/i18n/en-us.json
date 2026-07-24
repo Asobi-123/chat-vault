@@ -146,6 +146,7 @@
   "cloud.toasts.connectFailed": "Failed to connect Cloud Vault.",
   "cloud.toasts.syncStarting": "Syncing to cloud...",
   "cloud.toasts.synced": "Synced to cloud: {scopes} scopes / {snapshots} backups / {resources} linked resources.",
+  "cloud.toasts.syncedPartial": "Cloud sync completed: {scopes} scopes / {snapshots} backups / {resources} linked resources; skipped {skipped} problematic backup(s), which remain in local Chat Vault.",
   "cloud.toasts.syncFailed": "Failed to sync to cloud.",
   "cloud.toasts.refreshStarting": "Refreshing remote catalog...",
   "cloud.toasts.importStarting": "Importing cloud backup...",

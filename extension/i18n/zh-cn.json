@@ -146,6 +146,7 @@
   "cloud.toasts.connectFailed": "连接云保险库失败。",
   "cloud.toasts.syncStarting": "正在同步到云端……",
   "cloud.toasts.synced": "已同步到云端：{scopes} 条聊天线 / {snapshots} 条备份 / {resources} 个关联资源。",
+  "cloud.toasts.syncedPartial": "云端同步完成：{scopes} 条聊天线 / {snapshots} 条备份 / {resources} 个关联资源；跳过 {skipped} 条异常备份，仍保留在本地保险箱。",
   "cloud.toasts.syncFailed": "同步到云端失败。",
   "cloud.toasts.refreshStarting": "正在刷新远端目录……",
   "cloud.toasts.importStarting": "正在导入云端备份……",

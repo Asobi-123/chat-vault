@@ -2170,11 +2170,20 @@ async function syncCloudNow() {
         renderCloudStatus(cloudConfigCache, cloudManifestCache);
         renderCloudScopeList();
         renderCloudCheckpointList();
-        toastr.success(t('cloud.toasts.synced', {
+        const toastKey = Number(result.skippedCount || 0) > 0
+            ? 'cloud.toasts.syncedPartial'
+            : 'cloud.toasts.synced';
+        const toastArgs = {
             scopes: result.scopeCount || 0,
             snapshots: result.snapshotCount || 0,
             resources: result.resourceCount || 0,
-        }), getAppTitle());
+            skipped: result.skippedCount || 0,
+        };
+        if (toastKey === 'cloud.toasts.syncedPartial') {
+            toastr.warning(t(toastKey, toastArgs), getAppTitle());
+        } else {
+            toastr.success(t(toastKey, toastArgs), getAppTitle());
+        }
     } finally {
         setCloudToolbarBusyState(false);
     }
