@@ -7,6 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-07-24
+
 ### Fixed
 
 - Cloud Vault now stores cloud snapshots larger than 40 MiB as transparent gzip-compressed 8 MiB content-addressed chunks instead of a single Git blob. Restore, import, preview, and explicit cloud deletion understand the new format; existing `.jsonl` cloud snapshots remain readable without migration.

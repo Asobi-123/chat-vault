@@ -29,6 +29,7 @@ All independent backups and unsaved edits are written to:
 - **Faster disk flush** by calling `context.saveChat()` after commit events
 - **Backup management** with preview, restore-as-new, overwrite-current, long-term keep, rename, and delete
 - **Git Cloud Vault** that pushes long-term and stable backups into a separate Git repository for cross-device recovery
+- **Automatic large-chat chunking** that transparently splits cloud snapshots above 40 MiB into compressed small Git objects, with no extra setup
 - **Resource-aware cloud restore** that can bring over character cards, personas, lorebooks, and groups together with the chat
 - **Append-only cloud retention with manual cleanup** so local deletion does not silently wipe older cloud copies
 - **Character Card Merge** that consolidates same-name duplicate cards into one (with field-level definition diff preview, automatic PNG archiving, and one-click post-completion rollback)
@@ -170,6 +171,11 @@ It deletes all local backups, unsaved edit records, and recovery index entries u
 
 No.
 Local Chat Vault storage is still the main recovery chain.
+
+**Q: What if a chat backup exceeds GitHub's 100 MB limit?**
+
+Cloud Vault automatically writes snapshots above 40 MiB as compressed small chunks and restores them transparently. It does not require Git LFS, another account, or extra settings.
+If one local snapshot is unreadable, that sync skips it and continues with the other chats; the original file remains in local Chat Vault.
 The Git remote is a low-frequency off-site vault.
 
 **Q: What is the difference between `Import Local` and `Restore as New Chat`?**
