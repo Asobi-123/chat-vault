@@ -164,4 +164,4 @@
 
 ## 发布收口
 
-- `CVP-08`：完整自动回归通过后，CHANGELOG 仅保留 `0.3.4` 与 `0.4.0` 的最终用户差异；提交 feature 内容并以 fast-forward 方式合并到 `main`。不在本项推送远端或创建 tag。
+- `CVP-08`：完整自动回归通过，CHANGELOG 仅保留 `0.3.4` 与 `0.4.0` 的最终用户差异；feature 提交 `7531674` 已 fast-forward 合并到 `main`。未推送远端，未创建 tag。
