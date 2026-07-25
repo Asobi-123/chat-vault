@@ -47,20 +47,17 @@ The goal is to keep backup and recovery logic independent from the current chat 
 2. When a rename succeeds, it calls `/api/plugins/chat-vault/scope/rebind-chat`.
 3. The server plugin updates alias bindings so old and new chat ids still resolve to the same scope.
 
-### 5. Git cloud vault
+### 5. Git cloud vault and repository pool
 
-1. The front-end opens the cloud tab and saves repository config into the server-side user directory. The GitHub token lives only in that `cloud-config.json`; it is never written into the cloud repository's `.git/config`.
-2. A manual sync asks the server plugin to scan local Chat Vault data.
-3. The server plugin selects:
-   - all long-term keep backups
-   - one stable backup per scope
-4. Each selected snapshot is processed independently. For every entry, the server plugin streams linked resources (character cards, persona data, lorebooks, group definitions): read, hash, persist under a content-addressed path, then release before moving on.
-5. A cloud snapshot up to 40 MiB remains a normal `.jsonl` object. A larger one is stored as independently gzip-compressed 8 MiB chunks under `objects/snapshot-chunks/`; its snapshot meta lists the ordered chunk hashes. The cloud reader reassembles and validates the chunks before parsing JSONL. No Git blob produced by this path approaches GitHub's 50 MiB warning threshold.
-6. Resources and large-snapshot chunks are content-addressed, so repeated content is reused across cloud snapshots.
-7. An unreadable or otherwise failing local snapshot is skipped for that run while the remaining selected snapshots still commit and push. The response reports the skipped count; a previous successful reference from that device is retained.
-8. None of this touches the live SillyTavern `data` tree — the cloud workspace is a dedicated directory.
-9. The remote `manifest.json` is rebuilt from cloud snapshot metadata already stored in that workspace.
-10. Another device can fetch that manifest, browse remote scopes, import resources plus a snapshot into local Chat Vault, or restore it as a new chat.
+1. The front-end saves one or more repositories into the server-side `cloud-config.json`. The first repository is the catalog repository. The default GitHub token and optional per-repository overrides remain local only; no token is written into a remote Git URL, `.git/config`, manifest, or pool descriptor.
+2. A one-repository configuration is valid and keeps the former Cloud Vault flow. Adding another repository only needs its URL when the saved default token can access it.
+3. The catalog repository stores `vault-pool.json`, a token-free descriptor with the repository list and durable `scopeId -> homeRepositoryId` mappings. The descriptor is copied to each healthy repository after catalog commit, allowing another device to discover repository URLs after connecting to the catalog.
+4. During the first v1-to-pool upgrade, every existing catalog manifest scope is assigned to the catalog before new assignments are made. A home mapping never changes during ordinary sync.
+5. A manual sync selects all long-term keep backups plus one stable backup per scope. New scopes are assigned to the healthy repository with the lowest logical snapshot bytes plus this run's planned bytes. A scope's selected snapshots, chunks, resources, device state, and manifest entry are persisted only in its home repository.
+6. Each selected snapshot is processed independently. Linked resources are streamed: read, hash, persist under a content-addressed path, then release before moving on. A snapshot up to 40 MiB remains a normal `.jsonl`; a larger one is stored as independently gzip-compressed 8 MiB chunks under `objects/snapshot-chunks/`.
+7. An unreadable local snapshot is skipped while the remaining scopes continue. A repository fetch, commit, or push failure similarly affects only scopes assigned to that repository; healthy repositories still commit and push. The response carries repository status, failed repository IDs, and affected scope IDs.
+8. Per-repository manifests are rebuilt from snapshot metadata. The server aggregates those manifests for the panel and attaches `repositoryId` to every remote entry. Preview, import, restore, and explicit delete route back to that exact repository. Deletion only cleans unreachable objects inside that repository.
+9. None of this touches the live SillyTavern `data` tree. Every Git workspace remains under `user/files/chat-vault/cloud/remotes/<repoKey>/repo/`.
 
 ### 6. Cloud restore and local import
 
@@ -130,6 +127,7 @@ Cloud upload-side dedupe complements the merge tab: 0.3.0+ identifies character 
 │   snapshots/*.jsonl                          │
 │ cloud/remotes/<repoKey>/repo/                │
 │   vault.json                                 │
+│   vault-pool.json                            │
 │   manifest.json                              │
 │   devices/*.json                             │
 │   objects/meta/<scopeId>/*.json              │
@@ -195,6 +193,8 @@ override, which is passed on the command line for that one command and never
 written to disk. This keeps the token in exactly one place — the server-side
 `cloud-config.json` the user filled in — instead of duplicating it into the
 repository config where it would ride along with backups.
+
+Repository-pool membership is different: `vault-pool.json` is deliberately replicated to healthy repositories so another device can discover repository URLs and scope homes. It contains no token, local path, or device name.
 
 Two supporting behaviors make this robust:
 

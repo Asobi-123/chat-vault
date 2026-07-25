@@ -36,8 +36,18 @@ const PANEL_IDS = Object.freeze({
     modal: 'cvt_modal',
     close: 'cvt_modal_close',
 });
+const DEFAULT_THEME = Object.freeze({
+    bg: '#171d25',
+    surface: '#222b36',
+    fieldBg: '#10171f',
+    border: '#465568',
+    text: '#edf2f7',
+    dim: '#a7b3c2',
+    accent: '#76b7f2',
+    accentSoft: 'rgba(118,183,242,.16)',
+});
 const THEMES = Object.freeze({
-    auto: null,
+    auto: DEFAULT_THEME,
     slate: { bg: '#182028', surface: '#232d39', fieldBg: '#121920', border: '#435366', text: '#eef3f7', dim: '#9eb0c3', accent: '#e4b35d', accentSoft: 'rgba(228,179,93,.16)' },
     ocean: { bg: '#0d1721', surface: '#152534', fieldBg: '#0a1219', border: '#3f607f', text: '#edf6ff', dim: '#86a3c0', accent: '#69b8ff', accentSoft: 'rgba(105,184,255,.16)' },
     mocha: { bg: '#1a1412', surface: '#2e231d', fieldBg: '#140f0c', border: '#5e4b3e', text: '#f2e8e0', dim: '#9e8878', accent: '#c09070', accentSoft: 'rgba(192,144,112,.18)' },
@@ -65,15 +75,17 @@ let cloudManifestCache = null;
 let activeCloudScopeId = '';
 let currentThemeId = 'auto';
 let cloudToolbarBusy = false;
+let cloudRepositoryDialog = null;
+let cloudRepositoryEditor = null;
+let cloudRepositoryDialogBusy = false;
+let cloudHelpDialog = null;
 let csrfOverrideToken = '';
 let csrfRefreshPromise = null;
 
 function buildThemeButtons() {
     return Object.keys(THEMES).map((themeId) => {
         const palette = THEMES[themeId];
-        const swatchStyle = palette
-            ? `background:linear-gradient(135deg,${palette.surface},${palette.bg});border:1px solid ${palette.border};`
-            : 'background:transparent;border:1px dashed currentColor;';
+        const swatchStyle = `background:linear-gradient(135deg,${palette.surface},${palette.bg});border:1px solid ${palette.border};`;
         return `<button type="button" class="cvt-theme-btn${currentThemeId === themeId ? ' active' : ''}" data-theme="${themeId}"><span class="cvt-theme-swatch" style="${swatchStyle}"></span><span class="cvt-theme-label">${t(`theme.${themeId}`)}</span></button>`;
     }).join('');
 }
@@ -271,58 +283,21 @@ function buildPanelHtml() {
                 </section>
 
                 <section class="cvt-page" data-cvt-page="cloud">
-                    <div class="cvt-card">
+                    <div class="cvt-card cvt-cloud-overview">
                         <div class="cvt-section-head">
                             <strong>${t('cloud.section.title')}</strong>
                             <div class="cvt-section-head-actions">
                                 <span id="cvt_cloud_summary" class="cvt-summary">${t('cloud.status.idle')}</span>
-                                ${buildSectionToggle('cloud_overview')}
                             </div>
                         </div>
-                        <div class="${getCardBodyClass('cloud_overview', { scroll: true })}" data-cvt-section="cloud_overview">
-                            <div class="cvt-toolbar">
-                                <button id="cvt_cloud_save_config" type="button" class="menu_button">${t('cloud.actions.saveConfig')}</button>
-                                <button id="cvt_cloud_connect" type="button" class="menu_button">${t('cloud.actions.connect')}</button>
-                                <button id="cvt_cloud_sync" type="button" class="menu_button">${t('cloud.actions.syncNow')}</button>
-                                <button id="cvt_cloud_refresh" type="button" class="menu_button">${t('cloud.actions.refreshRemote')}</button>
+                        <div class="cvt-card-body">
+                            <div class="cvt-cloud-actions">
+                                <button id="cvt_cloud_sync" type="button" class="menu_button cvt-cloud-primary"><i class="fa-solid fa-cloud-arrow-up" aria-hidden="true"></i><span>${t('cloud.actions.syncNow')}</span></button>
+                                <button id="cvt_cloud_refresh" type="button" class="menu_button" title="${t('cloud.actions.refreshRemote')}" aria-label="${t('cloud.actions.refreshRemote')}"><i class="fa-solid fa-arrows-rotate" aria-hidden="true"></i><span>${t('cloud.actions.refreshRemote')}</span></button>
+                                <button id="cvt_cloud_manage" type="button" class="menu_button"><i class="fa-solid fa-gear" aria-hidden="true"></i><span>${t('cloud.actions.manageRepositories')}</span></button>
+                                <button id="cvt_cloud_help" type="button" class="menu_button" title="${t('cloud.actions.help')}" aria-label="${t('cloud.actions.help')}"><i class="fa-solid fa-circle-question" aria-hidden="true"></i><span>${t('cloud.actions.help')}</span></button>
                             </div>
-                            <div class="cvt-grid-2" style="margin-top:10px;">
-                                <label class="cvt-field">
-                                    <span>${t('cloud.fields.repoUrl')}</span>
-                                    <input id="cvt_cloud_repo_url" class="text_pole" type="url" placeholder="https://github.com/owner/repo.git">
-                                    <small>${t('cloud.fields.repoUrlHint')}</small>
-                                </label>
-                                <label class="cvt-field">
-                                    <span>${t('cloud.fields.branch')}</span>
-                                    <input id="cvt_cloud_branch" class="text_pole" type="text" placeholder="main">
-                                    <small>${t('cloud.fields.branchHint')}</small>
-                                </label>
-                                <label class="cvt-field">
-                                    <span>${t('cloud.fields.token')}</span>
-                                    <input id="cvt_cloud_token" class="text_pole" type="password" placeholder="${t('cloud.fields.tokenPlaceholder')}">
-                                    <small id="cvt_cloud_token_hint">${t('cloud.fields.tokenHint')}</small>
-                                </label>
-                                <label class="cvt-field">
-                                    <span>${t('cloud.fields.deviceName')}</span>
-                                    <input id="cvt_cloud_device_name" class="text_pole" type="text" placeholder="${t('cloud.fields.deviceNamePlaceholder')}">
-                                    <small>${t('cloud.fields.deviceNameHint')}</small>
-                                </label>
-                            </div>
-                            <div class="cvt-cloud-checks">
-                                <label class="cvt-check-row">
-                                    <input type="checkbox" id="cvt_cloud_sync_pinned">
-                                    <span>${t('cloud.fields.syncPinned')}</span>
-                                </label>
-                                <label class="cvt-check-row">
-                                    <input type="checkbox" id="cvt_cloud_sync_latest">
-                                    <span>${t('cloud.fields.syncLatest')}</span>
-                                </label>
-                            </div>
-                            <div class="cvt-note cvt-note-strong">${t('cloud.useCase')}</div>
-                            <div class="cvt-note">${t('cloud.capability')}</div>
-                            <div class="cvt-note">${t('cloud.retentionExplain')}</div>
-                            <div class="cvt-note">${t('cloud.importExplain')}</div>
-                            <div class="cvt-note">${t('cloud.restoreExplain')}</div>
+                            <div id="cvt_cloud_action_hint" class="cvt-hint">${t('cloud.actionHint.idle')}</div>
                         </div>
                     </div>
 
@@ -538,6 +513,13 @@ function setActivePanelTab(tabName = 'chat') {
     document.querySelectorAll('.cvt-page').forEach((page) => {
         page.classList.toggle('active', page.dataset.cvtPage === tabName);
     });
+
+    if (tabName === 'cloud') {
+        const body = document.getElementById(PANEL_IDS.modal)?.querySelector('.cvt-body');
+        if (body) {
+            body.scrollTop = 0;
+        }
+    }
 }
 
 function openPanel(tabName = 'chat') {
@@ -553,7 +535,18 @@ function openPanel(tabName = 'chat') {
     }
 
     setActivePanelTab(tabName);
-    overlay.style.display = 'flex';
+    if (!overlay.open) {
+        if (typeof overlay.showModal === 'function') {
+            try {
+                overlay.showModal();
+            } catch (error) {
+                console.warn('[chat-vault] Failed to open main panel dialog:', error);
+                overlay.setAttribute('open', '');
+            }
+        } else {
+            overlay.setAttribute('open', '');
+        }
+    }
 
     if (tabName === 'recovery') {
         void refreshRecoveryScopes({ quiet: true });
@@ -567,8 +560,12 @@ function openPanel(tabName = 'chat') {
 
 function closePanel() {
     const overlay = document.getElementById(PANEL_IDS.overlay);
+    if (overlay?.open && typeof overlay.close === 'function') {
+        overlay.close();
+        return;
+    }
     if (overlay) {
-        overlay.style.display = 'none';
+        overlay.removeAttribute('open');
     }
 }
 
@@ -576,41 +573,33 @@ function applyTheme(themeId = 'auto') {
     const modal = document.getElementById(PANEL_IDS.modal);
     const trigger = document.getElementById(PANEL_IDS.trigger);
     currentThemeId = Object.hasOwn(THEMES, themeId) ? themeId : 'auto';
+    const palette = THEMES[currentThemeId];
+    const vars = {
+        '--cvt-bg': palette.bg,
+        '--cvt-surface': palette.surface,
+        '--cvt-field': palette.fieldBg,
+        '--cvt-border': palette.border,
+        '--cvt-text': palette.text,
+        '--cvt-dim': palette.dim,
+        '--cvt-accent': palette.accent,
+        '--cvt-accent-soft': palette.accentSoft,
+    };
 
     if (modal) {
-        const palette = THEMES[currentThemeId];
-        if (!palette) {
-            modal.removeAttribute('style');
-        } else {
-            const vars = {
-                '--cvt-bg': palette.bg,
-                '--cvt-surface': palette.surface,
-                '--cvt-field': palette.fieldBg,
-                '--cvt-border': palette.border,
-                '--cvt-text': palette.text,
-                '--cvt-dim': palette.dim,
-                '--cvt-accent': palette.accent,
-                '--cvt-accent-soft': palette.accentSoft,
-            };
-            Object.entries(vars).forEach(([key, value]) => {
-                modal.style.setProperty(key, value);
-            });
-        }
+        Object.entries(vars).forEach(([key, value]) => {
+            modal.style.setProperty(key, value);
+        });
     }
 
     if (trigger) {
-        const palette = THEMES[currentThemeId];
-        if (!palette) {
-            trigger.style.removeProperty('background');
-            trigger.style.removeProperty('border-color');
-            trigger.style.removeProperty('color');
-            trigger.style.removeProperty('box-shadow');
-        } else {
-            trigger.style.background = palette.bg;
-            trigger.style.borderColor = palette.border;
-            trigger.style.color = palette.text;
-            trigger.style.boxShadow = '0 6px 20px rgba(0,0,0,.35)';
-        }
+        trigger.style.background = palette.bg;
+        trigger.style.borderColor = palette.border;
+        trigger.style.color = palette.text;
+        trigger.style.boxShadow = '0 6px 20px rgba(0,0,0,.35)';
+    }
+
+    if (cloudRepositoryDialog) {
+        copyCloudThemeToDialog(cloudRepositoryDialog);
     }
 
     document.querySelectorAll('.cvt-theme-btn').forEach((button) => {
@@ -722,10 +711,9 @@ function buildAndMountFloatingUi() {
     positionTrigger(trigger, { force: true });
     makeTriggerDraggable(trigger, () => openPanel('chat'));
 
-    const overlay = document.createElement('div');
+    const overlay = document.createElement('dialog');
     overlay.id = PANEL_IDS.overlay;
     overlay.className = 'cvt-overlay';
-    overlay.style.display = 'none';
     overlay.innerHTML = buildPanelHtml();
     document.body.appendChild(overlay);
 
@@ -737,6 +725,11 @@ function buildAndMountFloatingUi() {
                 return;
             }
             closePanel();
+        }
+    });
+    overlay.addEventListener('cancel', (event) => {
+        if (cvmState.primary !== null && cvmState.step < 5) {
+            event.preventDefault();
         }
     });
 
@@ -1363,6 +1356,12 @@ function buildCheckpointItem(entry, { allowOverwrite = true, actionList = null }
         });
         tags.appendChild(tag);
     }
+    if (entry.repositoryName) {
+        const tag = document.createElement('span');
+        tag.className = 'cvt-tag cvt-tag-cloud-device';
+        tag.textContent = t('cloud.tags.repository', { name: entry.repositoryName });
+        tags.appendChild(tag);
+    }
 
     const meta = document.createElement('div');
     meta.className = 'cvt-item-meta';
@@ -1404,6 +1403,9 @@ function buildCheckpointItem(entry, { allowOverwrite = true, actionList = null }
         button.className = action.danger ? 'menu_button cvt-danger' : 'menu_button';
         button.dataset.action = action.action;
         button.dataset.snapshotId = entry.id;
+        if (entry.repositoryId) {
+            button.dataset.repositoryId = entry.repositoryId;
+        }
         button.dataset.source = encodeDataJson(entry.source || statusCache?.source || activeScopeOverride || buildSource());
         button.textContent = action.text;
         actions.appendChild(button);
@@ -1465,10 +1467,9 @@ function setSectionCollapsed(sectionKey, collapsed) {
 function setCloudToolbarBusyState(isBusy) {
     cloudToolbarBusy = Boolean(isBusy);
     const buttonIds = [
-        'cvt_cloud_save_config',
-        'cvt_cloud_connect',
         'cvt_cloud_sync',
         'cvt_cloud_refresh',
+        'cvt_cloud_manage',
     ];
 
     for (const id of buttonIds) {
@@ -1783,57 +1784,765 @@ function getActiveCloudScope() {
 
 function renderCloudStatus(config = null, manifest = null) {
     const summary = document.getElementById('cvt_cloud_summary');
-    if (!summary) {
+    const repositories = Array.isArray(config?.repositories) ? config.repositories : [];
+    if (!repositories.length || !config?.repoUrl) {
+        if (summary) summary.textContent = t('cloud.status.missingConfig');
+        renderCloudActionState(config, manifest);
         return;
     }
 
-    if (!config?.repoUrl) {
-        summary.textContent = t('cloud.status.missingConfig');
-        return;
-    }
-
-    if (!config?.hasToken) {
-        summary.textContent = t('cloud.status.missingToken');
+    if (!repositories.some((repository) => repository?.hasToken) && !config?.hasToken) {
+        if (summary) summary.textContent = t('cloud.status.missingToken');
+        renderCloudActionState(config, manifest);
         return;
     }
 
     const scopeCount = Number(manifest?.scopeCount || manifest?.scopes?.length || 0);
     const snapshotCount = Number(manifest?.snapshotCount || 0);
     const updatedAt = Number(manifest?.updatedAt || 0);
+    const memberCount = repositories.length;
+    const availableMemberCount = Number(manifest?.availableMemberCount || memberCount);
 
     if (!scopeCount) {
-        summary.textContent = t('cloud.status.emptyRemote');
+        if (summary) {
+            summary.textContent = t('cloud.status.emptyRemote', {
+                members: availableMemberCount,
+                total: memberCount,
+            });
+        }
+        renderCloudActionState(config, manifest);
         return;
     }
 
-    summary.textContent = t('cloud.status.ready', {
-        scopes: scopeCount,
-        snapshots: snapshotCount,
-        time: updatedAt ? formatDateTime(updatedAt) : t('common.unknownTime'),
+    if (Number(manifest?.failedMemberCount || 0) > 0) {
+        if (summary) {
+            summary.textContent = t('cloud.status.partial', {
+                scopes: scopeCount,
+                snapshots: snapshotCount,
+                members: availableMemberCount,
+                total: memberCount,
+            });
+        }
+        renderCloudActionState(config, manifest);
+        return;
+    }
+
+    if (summary) {
+        summary.textContent = t('cloud.status.ready', {
+            scopes: scopeCount,
+            snapshots: snapshotCount,
+            members: availableMemberCount,
+            total: memberCount,
+            time: updatedAt ? formatDateTime(updatedAt) : t('common.unknownTime'),
+        });
+    }
+    renderCloudActionState(config, manifest);
+}
+
+function hasCloudConnectionConfig(config = null) {
+    const repositories = Array.isArray(config?.repositories) ? config.repositories : [];
+    return Boolean(
+        repositories.length
+        && config?.repoUrl
+        && (config?.hasToken || repositories.some((repository) => repository?.hasToken)),
+    );
+}
+
+function renderCloudActionState(config = null, manifest = null) {
+    const hint = document.getElementById('cvt_cloud_action_hint');
+    if (!hint) {
+        return;
+    }
+
+    if (!hasCloudConnectionConfig(config)) {
+        hint.textContent = t('cloud.actionHint.setup');
+        return;
+    }
+
+    if (Number(manifest?.failedMemberCount || 0) > 0) {
+        hint.textContent = t('cloud.actionHint.partial');
+        return;
+    }
+
+    hint.textContent = t('cloud.actionHint.ready');
+}
+
+function getCloudCatalogRepository(config = null) {
+    const repositories = Array.isArray(config?.repositories) ? config.repositories : [];
+    return repositories.find((repository) => String(repository?.repositoryId || '') === String(config?.catalogRepositoryId || ''))
+        || repositories[0]
+        || null;
+}
+
+function getCloudMemberStatusLabel(member, status = null) {
+    const state = String(status?.status || '').trim();
+    if (state === 'failed') {
+        return t('cloud.member.failed');
+    }
+    if (state === 'missing_token') {
+        return t('cloud.member.missingToken');
+    }
+    if (member?.hasToken) {
+        return t('cloud.member.ready');
+    }
+    return t('cloud.member.needsToken');
+}
+
+function getCloudMemberStatusMap() {
+    return new Map((Array.isArray(cloudManifestCache?.members) ? cloudManifestCache.members : []).map((status) => [
+        String(status?.repositoryId || ''),
+        status,
+    ]));
+}
+
+function getCloudMemberStatusKind(member, status = null) {
+    const state = String(status?.status || '').trim();
+    if (state === 'failed' || state === 'missing_token') {
+        return 'error';
+    }
+    if (state === 'ready' || member?.hasToken) {
+        return 'ok';
+    }
+    return 'idle';
+}
+
+function copyCloudThemeToDialog(dialog) {
+    const modal = document.getElementById(PANEL_IDS.modal);
+    if (!dialog || !modal) {
+        return;
+    }
+
+    const styles = globalThis.getComputedStyle?.(modal);
+    for (const property of ['--cvt-bg', '--cvt-surface', '--cvt-field', '--cvt-border', '--cvt-text', '--cvt-dim', '--cvt-accent', '--cvt-accent-soft']) {
+        const value = styles?.getPropertyValue(property).trim();
+        if (value) {
+            dialog.style.setProperty(property, value);
+        }
+    }
+}
+
+function buildCloudManagerField({ id, label, value = '', type = 'text', placeholder = '', hint = '', disabled = cloudRepositoryDialogBusy }) {
+    const field = document.createElement('label');
+    field.className = 'cvt-field';
+
+    const labelElement = document.createElement('span');
+    labelElement.textContent = label;
+    field.appendChild(labelElement);
+
+    const input = document.createElement('input');
+    input.id = id;
+    input.type = type;
+    input.className = 'text_pole';
+    input.value = String(value || '');
+    input.placeholder = placeholder;
+    input.disabled = disabled;
+    field.appendChild(input);
+
+    if (hint) {
+        const hintElement = document.createElement('small');
+        hintElement.textContent = hint;
+        field.appendChild(hintElement);
+    }
+
+    return { field, input };
+}
+
+function buildCloudRepositoryRow(repository, { catalog = false, status = null } = {}) {
+    const row = document.createElement('div');
+    row.className = 'cvt-cloud-repository-row';
+
+    const main = document.createElement('div');
+    main.className = 'cvt-cloud-repository-main';
+
+    const title = document.createElement('strong');
+    title.textContent = catalog ? t('cloud.manager.catalog') : t('cloud.manager.member');
+    const url = document.createElement('span');
+    url.className = 'cvt-cloud-repository-url';
+    url.textContent = repository.repositoryName || repository.repoUrl || t('cloud.member.new');
+    const meta = document.createElement('span');
+    meta.className = 'cvt-cloud-repository-meta';
+    meta.textContent = t('cloud.manager.branchMeta', { branch: repository.branch || 'main' });
+    main.append(title, url, meta);
+
+    const actions = document.createElement('div');
+    actions.className = 'cvt-cloud-repository-actions';
+    const badge = document.createElement('span');
+    badge.className = 'cvt-badge';
+    badge.dataset.kind = getCloudMemberStatusKind(repository, status);
+    badge.textContent = getCloudMemberStatusLabel(repository, status);
+    actions.appendChild(badge);
+
+    const edit = document.createElement('button');
+    edit.type = 'button';
+    edit.className = 'menu_button cvt-icon-button';
+    edit.title = t('cloud.actions.editRepository');
+    edit.setAttribute('aria-label', t('cloud.actions.editRepository'));
+    edit.innerHTML = '<i class="fa-solid fa-pen" aria-hidden="true"></i>';
+    edit.disabled = cloudRepositoryDialogBusy;
+    edit.addEventListener('click', () => {
+        cloudRepositoryEditor = {
+            mode: 'edit',
+            repositoryId: String(repository.repositoryId || ''),
+            repoUrl: String(repository.repoUrl || ''),
+            branch: String(repository.branch || 'main'),
+            isCatalog: catalog,
+            hasTokenOverride: Boolean(repository.hasTokenOverride),
+            error: '',
+        };
+        renderCloudRepositoryDialog();
     });
+    actions.appendChild(edit);
+
+    row.append(main, actions);
+    return row;
+}
+
+function getCloudRepositoryEditorTitle(editor) {
+    if (editor.mode === 'create-catalog') {
+        return t('cloud.manager.setupTitle');
+    }
+    if (editor.mode === 'create-member') {
+        return t('cloud.manager.addTitle');
+    }
+    return editor.isCatalog ? t('cloud.manager.editCatalogTitle') : t('cloud.manager.editMemberTitle');
+}
+
+function getCloudRepositoryEditorAction(editor) {
+    return editor.mode === 'create-member'
+        ? t('cloud.actions.addAndConnect')
+        : t('cloud.actions.saveAndConnect');
+}
+
+function captureCloudRepositoryEditor() {
+    if (!cloudRepositoryEditor || !cloudRepositoryDialog) {
+        return cloudRepositoryEditor;
+    }
+
+    const repoUrl = cloudRepositoryDialog.querySelector('#cvt_cloud_manager_repo_url');
+    const branch = cloudRepositoryDialog.querySelector('#cvt_cloud_manager_branch');
+    const token = cloudRepositoryDialog.querySelector('#cvt_cloud_manager_access_token');
+    cloudRepositoryEditor = {
+        ...cloudRepositoryEditor,
+        repoUrl: String(repoUrl?.value || '').trim(),
+        branch: String(branch?.value || '').trim() || 'main',
+        githubToken: String(token?.value || '').trim(),
+    };
+    return cloudRepositoryEditor;
+}
+
+function getCloudConfigPayloadFromManager() {
+    const config = cloudConfigCache && typeof cloudConfigCache === 'object' ? cloudConfigCache : {};
+    const editor = captureCloudRepositoryEditor();
+    const repositories = (Array.isArray(config.repositories) ? config.repositories : []).map((repository) => ({
+        repositoryId: String(repository?.repositoryId || ''),
+        repoUrl: String(repository?.repoUrl || '').trim(),
+        branch: String(repository?.branch || '').trim() || 'main',
+    }));
+    const catalog = getCloudCatalogRepository(config);
+    const editorRepository = editor ? {
+        repositoryId: editor.mode === 'create-catalog' || editor.mode === 'create-member' ? '' : editor.repositoryId,
+        repoUrl: String(editor.repoUrl || '').trim(),
+        branch: String(editor.branch || '').trim() || 'main',
+        ...(!editor.isCatalog && editor.githubToken ? { githubTokenOverride: editor.githubToken } : {}),
+    } : null;
+
+    if (editorRepository) {
+        if (editor.mode === 'create-catalog' || editor.mode === 'create-member') {
+            repositories.push(editorRepository);
+        } else {
+            const index = repositories.findIndex((repository) => repository.repositoryId === editor.repositoryId);
+            if (index >= 0) {
+                repositories[index] = editorRepository;
+            }
+        }
+    }
+
+    const deviceName = cloudRepositoryDialog?.querySelector('#cvt_cloud_manager_device_name');
+    const syncPinned = cloudRepositoryDialog?.querySelector('#cvt_cloud_manager_sync_pinned');
+    const syncLatest = cloudRepositoryDialog?.querySelector('#cvt_cloud_manager_sync_latest');
+    const catalogToken = editor && (editor.mode === 'create-catalog' || editor.isCatalog)
+        ? editor.githubToken
+        : '';
+
+    return {
+        repositories,
+        githubToken: catalogToken,
+        deviceName: deviceName ? String(deviceName.value || '').trim() : String(config.deviceName || ''),
+        syncPinned: syncPinned ? Boolean(syncPinned.checked) : config.syncPinned !== false,
+        syncLatestStable: syncLatest ? Boolean(syncLatest.checked) : config.syncLatestStable !== false,
+        catalogRepositoryId: catalog?.repositoryId || config.catalogRepositoryId || '',
+    };
+}
+
+function buildCloudManagerEditor() {
+    const editor = cloudRepositoryEditor;
+    if (!editor) {
+        return null;
+    }
+
+    const section = document.createElement('section');
+    section.className = 'cvt-cloud-manager-editor';
+    const heading = document.createElement('strong');
+    heading.textContent = getCloudRepositoryEditorTitle(editor);
+    section.appendChild(heading);
+
+    const fields = document.createElement('div');
+    fields.className = 'cvt-cloud-manager-fields';
+    const url = buildCloudManagerField({
+        id: 'cvt_cloud_manager_repo_url',
+        label: t('cloud.fields.repoUrl'),
+        value: editor.repoUrl,
+        type: 'url',
+        placeholder: 'https://github.com/owner/repo.git',
+        hint: t('cloud.fields.repoUrlHint'),
+    });
+    fields.appendChild(url.field);
+
+    const tokenIsCatalog = editor.mode === 'create-catalog' || editor.isCatalog;
+    const token = buildCloudManagerField({
+        id: 'cvt_cloud_manager_access_token',
+        label: tokenIsCatalog ? t('cloud.fields.token') : t('cloud.fields.memberToken'),
+        type: 'password',
+        value: editor.githubToken,
+        placeholder: tokenIsCatalog
+            ? (cloudConfigCache?.hasDefaultToken || cloudConfigCache?.hasToken ? t('cloud.fields.tokenSaved') : t('cloud.fields.tokenPlaceholder'))
+            : (editor.hasTokenOverride ? t('cloud.fields.memberTokenSaved') : t('cloud.fields.memberTokenPlaceholder')),
+        hint: tokenIsCatalog
+            ? (cloudConfigCache?.hasDefaultToken || cloudConfigCache?.hasToken ? t('cloud.fields.tokenHintSaved') : t('cloud.fields.tokenHint'))
+            : t('cloud.fields.memberTokenHint'),
+    });
+    fields.appendChild(token.field);
+    const branch = buildCloudManagerField({
+        id: 'cvt_cloud_manager_branch',
+        label: t('cloud.fields.branch'),
+        value: editor.branch || 'main',
+        placeholder: 'main',
+        hint: t('cloud.fields.branchHint'),
+    });
+    fields.appendChild(branch.field);
+    section.appendChild(fields);
+
+    if (editor.error) {
+        const error = document.createElement('div');
+        error.className = 'cvt-cloud-manager-error';
+        error.textContent = editor.error;
+        section.appendChild(error);
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'cvt-toolbar';
+    const submit = document.createElement('button');
+    submit.type = 'button';
+    submit.className = 'menu_button cvt-cloud-primary';
+    submit.textContent = getCloudRepositoryEditorAction(editor);
+    submit.disabled = cloudRepositoryDialogBusy;
+    submit.addEventListener('click', () => {
+        void submitCloudRepositoryEditor();
+    });
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'menu_button';
+    cancel.textContent = t('common.cancel');
+    cancel.disabled = cloudRepositoryDialogBusy;
+    cancel.addEventListener('click', () => {
+        cloudRepositoryEditor = null;
+        renderCloudRepositoryDialog();
+    });
+    actions.append(submit, cancel);
+    section.appendChild(actions);
+    return { section, urlInput: url.input };
+}
+
+function buildCloudManagerSettings() {
+    const config = cloudConfigCache && typeof cloudConfigCache === 'object' ? cloudConfigCache : {};
+    const section = document.createElement('section');
+    section.className = 'cvt-cloud-manager-settings';
+    const title = document.createElement('strong');
+    title.textContent = t('cloud.manager.syncSettings');
+    section.appendChild(title);
+
+    const fields = document.createElement('div');
+    fields.className = 'cvt-cloud-manager-fields';
+    const device = buildCloudManagerField({
+        id: 'cvt_cloud_manager_device_name',
+        label: t('cloud.fields.deviceName'),
+        value: config.deviceName,
+        placeholder: t('cloud.fields.deviceNamePlaceholder'),
+        hint: t('cloud.fields.deviceNameHint'),
+    });
+    fields.appendChild(device.field);
+
+    const checks = document.createElement('div');
+    checks.className = 'cvt-cloud-checks';
+    for (const [id, label, checked] of [
+        ['cvt_cloud_manager_sync_pinned', t('cloud.fields.syncPinned'), config.syncPinned !== false],
+        ['cvt_cloud_manager_sync_latest', t('cloud.fields.syncLatest'), config.syncLatestStable !== false],
+    ]) {
+        const row = document.createElement('label');
+        row.className = 'cvt-check-row';
+        const input = document.createElement('input');
+        input.id = id;
+        input.type = 'checkbox';
+        input.checked = checked;
+        input.disabled = cloudRepositoryDialogBusy;
+        const text = document.createElement('span');
+        text.textContent = label;
+        row.append(input, text);
+        checks.appendChild(row);
+    }
+    fields.appendChild(checks);
+
+    const save = document.createElement('button');
+    save.type = 'button';
+    save.className = 'menu_button';
+    save.textContent = t('cloud.actions.saveSettings');
+    save.disabled = cloudRepositoryDialogBusy || Boolean(cloudRepositoryEditor);
+    save.addEventListener('click', () => {
+        void saveCloudManagerSettings();
+    });
+    fields.appendChild(save);
+    section.appendChild(fields);
+    return section;
+}
+
+function buildCloudHelpContent() {
+    const content = document.createElement('div');
+    content.className = 'cvt-cloud-help-content';
+    for (const key of ['cloud.useCase', 'cloud.capability', 'cloud.retentionExplain', 'cloud.importExplain', 'cloud.restoreExplain']) {
+        const paragraph = document.createElement('p');
+        paragraph.className = 'cvt-note';
+        paragraph.textContent = t(key);
+        content.appendChild(paragraph);
+    }
+    return content;
+}
+
+function renderCloudRepositoryDialog({ focusEditor = false } = {}) {
+    const dialog = cloudRepositoryDialog;
+    if (!dialog) {
+        return;
+    }
+
+    copyCloudThemeToDialog(dialog);
+    dialog.replaceChildren();
+    const header = document.createElement('div');
+    header.className = 'cvt-cloud-manager-header';
+    const heading = document.createElement('div');
+    const title = document.createElement('strong');
+    title.textContent = t('cloud.manager.title');
+    const description = document.createElement('span');
+    description.textContent = t('cloud.manager.description');
+    heading.append(title, description);
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'cvt-close-btn';
+    close.innerHTML = '&times;';
+    close.title = t('common.close');
+    close.setAttribute('aria-label', t('common.close'));
+    close.disabled = cloudRepositoryDialogBusy;
+    close.addEventListener('click', closeCloudRepositoryDialog);
+    header.append(heading, close);
+    dialog.appendChild(header);
+
+    const body = document.createElement('div');
+    body.className = 'cvt-cloud-manager-body';
+    const config = cloudConfigCache && typeof cloudConfigCache === 'object' ? cloudConfigCache : {};
+    const catalog = getCloudCatalogRepository(config);
+    const repositories = Array.isArray(config.repositories) ? config.repositories : [];
+    const statusMap = getCloudMemberStatusMap();
+
+    const listTitle = document.createElement('strong');
+    listTitle.textContent = t('cloud.manager.repositories');
+    const list = document.createElement('div');
+    list.className = 'cvt-cloud-repository-list';
+    if (catalog) {
+        list.appendChild(buildCloudRepositoryRow(catalog, {
+            catalog: true,
+            status: statusMap.get(String(catalog.repositoryId || '')),
+        }));
+    } else {
+        const empty = document.createElement('div');
+        empty.className = 'cvt-empty';
+        empty.textContent = t('cloud.manager.noRepository');
+        list.appendChild(empty);
+    }
+    for (const repository of repositories.filter((item) => item?.repositoryId !== catalog?.repositoryId)) {
+        list.appendChild(buildCloudRepositoryRow(repository, {
+            status: statusMap.get(String(repository.repositoryId || '')),
+        }));
+    }
+    let add = null;
+    if (!cloudRepositoryEditor && catalog) {
+        add = document.createElement('button');
+        add.type = 'button';
+        add.className = 'menu_button';
+        add.innerHTML = `<i class="fa-solid fa-plus" aria-hidden="true"></i><span>${t('cloud.actions.addRepository')}</span>`;
+        add.disabled = cloudRepositoryDialogBusy;
+        add.addEventListener('click', () => {
+            cloudRepositoryEditor = {
+                mode: 'create-member',
+                repositoryId: '',
+                repoUrl: '',
+                branch: 'main',
+                isCatalog: false,
+                error: '',
+            };
+            renderCloudRepositoryDialog({ focusEditor: true });
+        });
+    }
+
+    const editor = buildCloudManagerEditor();
+    body.appendChild(buildCloudManagerSettings());
+    body.appendChild(listTitle);
+    body.appendChild(list);
+    if (add) {
+        body.appendChild(add);
+    }
+    if (editor) {
+        body.appendChild(editor.section);
+    }
+    dialog.appendChild(body);
+
+    if (focusEditor && editor?.urlInput) {
+        globalThis.setTimeout(() => editor.urlInput.focus(), 0);
+    }
+}
+
+function cleanupCloudHelpDialog(dialog) {
+    if (cloudHelpDialog === dialog) {
+        cloudHelpDialog = null;
+    }
+    dialog?.remove();
+}
+
+function closeCloudHelpDialog() {
+    const dialog = cloudHelpDialog;
+    if (!dialog) {
+        return;
+    }
+    if (dialog.open && typeof dialog.close === 'function') {
+        dialog.close();
+        return;
+    }
+    cleanupCloudHelpDialog(dialog);
+}
+
+function openCloudHelpDialog() {
+    if (cloudHelpDialog) {
+        return;
+    }
+
+    const dialog = document.createElement('dialog');
+    dialog.className = 'cvt-cloud-manager cvt-cloud-help';
+    dialog.addEventListener('click', (event) => {
+        if (event.target === dialog) {
+            closeCloudHelpDialog();
+        }
+    });
+    dialog.addEventListener('close', () => cleanupCloudHelpDialog(dialog));
+
+    const header = document.createElement('div');
+    header.className = 'cvt-cloud-manager-header';
+    const heading = document.createElement('div');
+    const title = document.createElement('strong');
+    title.textContent = t('cloud.actions.help');
+    const description = document.createElement('span');
+    description.textContent = t('cloud.help.description');
+    heading.append(title, description);
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'cvt-close-btn';
+    close.innerHTML = '&times;';
+    close.title = t('common.close');
+    close.setAttribute('aria-label', t('common.close'));
+    close.addEventListener('click', closeCloudHelpDialog);
+    header.append(heading, close);
+
+    const body = document.createElement('div');
+    body.className = 'cvt-cloud-manager-body';
+    body.appendChild(buildCloudHelpContent());
+    dialog.append(header, body);
+    document.body.appendChild(dialog);
+    cloudHelpDialog = dialog;
+    copyCloudThemeToDialog(dialog);
+
+    if (typeof dialog.showModal === 'function') {
+        try {
+            dialog.showModal();
+            return;
+        } catch (error) {
+            console.warn('[chat-vault] Failed to open cloud help dialog:', error);
+        }
+    }
+    dialog.setAttribute('open', '');
+}
+
+function cleanupCloudRepositoryDialog(dialog) {
+    if (cloudRepositoryDialog === dialog) {
+        cloudRepositoryDialog = null;
+        cloudRepositoryEditor = null;
+        cloudRepositoryDialogBusy = false;
+    }
+    dialog?.remove();
+}
+
+function closeCloudRepositoryDialog() {
+    const dialog = cloudRepositoryDialog;
+    if (!dialog) {
+        return;
+    }
+    if (dialog.open && typeof dialog.close === 'function') {
+        dialog.close();
+        return;
+    }
+    cleanupCloudRepositoryDialog(dialog);
+}
+
+function openCloudRepositoryDialog() {
+    if (cloudRepositoryDialog) {
+        return;
+    }
+
+    const dialog = document.createElement('dialog');
+    dialog.className = 'cvt-cloud-manager';
+    dialog.addEventListener('click', (event) => {
+        if (event.target === dialog && !cloudRepositoryDialogBusy) {
+            closeCloudRepositoryDialog();
+        }
+    });
+    dialog.addEventListener('cancel', (event) => {
+        if (cloudRepositoryDialogBusy) {
+            event.preventDefault();
+        }
+    });
+    dialog.addEventListener('close', () => cleanupCloudRepositoryDialog(dialog));
+    document.body.appendChild(dialog);
+    cloudRepositoryDialog = dialog;
+
+    const catalog = getCloudCatalogRepository(cloudConfigCache);
+    cloudRepositoryEditor = catalog ? null : {
+        mode: 'create-catalog',
+        repositoryId: '',
+        repoUrl: '',
+        branch: 'main',
+        isCatalog: true,
+        error: '',
+    };
+    renderCloudRepositoryDialog({ focusEditor: Boolean(cloudRepositoryEditor) });
+
+    if (typeof dialog.showModal === 'function') {
+        try {
+            dialog.showModal();
+            return;
+        } catch (error) {
+            console.warn('[chat-vault] Failed to open cloud repository dialog:', error);
+        }
+    }
+    dialog.setAttribute('open', '');
+}
+
+async function saveCloudConfig(payload, { quiet = false } = {}) {
+    const result = await callApi('/cloud/config/save', payload);
+    cloudConfigCache = result.config || {};
+    applyCloudConfigToDom(cloudConfigCache);
+    renderCloudStatus(cloudConfigCache, cloudManifestCache || buildEmptyCloudManifest());
+    if (!quiet) {
+        toastr.success(t('cloud.toasts.configSaved'), getAppTitle());
+    }
+    return result;
+}
+
+async function saveCloudManagerSettings() {
+    const payload = getCloudConfigPayloadFromManager();
+    cloudRepositoryDialogBusy = true;
+    renderCloudRepositoryDialog();
+    try {
+        await saveCloudConfig(payload);
+    } catch (error) {
+        console.error('[chat-vault] Failed to save cloud manager settings:', error);
+        toastr.error(t('cloud.toasts.configSaveFailed'), getAppTitle());
+    } finally {
+        cloudRepositoryDialogBusy = false;
+        renderCloudRepositoryDialog();
+    }
+}
+
+function getCloudOperationErrorDetail(error) {
+    const raw = String(error?.message || '').trim();
+    if (!raw) {
+        return t('common.operationFailed');
+    }
+    try {
+        const parsed = JSON.parse(raw);
+        const detail = String(parsed?.detail || parsed?.error || '').trim();
+        if (detail) {
+            return truncate(detail, 240);
+        }
+    } catch (parseError) {
+        // Non-JSON backend errors are already suitable for a short inline message.
+    }
+    return truncate(raw, 240);
+}
+
+function reconcileCloudRepositoryEditorAfterConnectFailure(editor, error) {
+    const config = cloudConfigCache && typeof cloudConfigCache === 'object' ? cloudConfigCache : {};
+    const repositories = Array.isArray(config.repositories) ? config.repositories : [];
+    const matchingRepositories = repositories
+        .filter((repository) => String(repository?.repoUrl || '').trim() === editor.repoUrl
+            && (String(repository?.branch || '').trim() || 'main') === (editor.branch || 'main'));
+    const matchingRepository = matchingRepositories[matchingRepositories.length - 1] || null;
+    const catalog = getCloudCatalogRepository(config);
+    return {
+        ...editor,
+        ...(matchingRepository ? {
+            mode: 'edit',
+            repositoryId: String(matchingRepository.repositoryId || ''),
+            isCatalog: String(matchingRepository.repositoryId || '') === String(catalog?.repositoryId || ''),
+            hasTokenOverride: Boolean(matchingRepository.hasTokenOverride),
+        } : {}),
+        error: t('cloud.manager.connectionError', { detail: getCloudOperationErrorDetail(error) }),
+    };
+}
+
+async function submitCloudRepositoryEditor() {
+    const editor = captureCloudRepositoryEditor();
+    if (!editor) {
+        return;
+    }
+    if (!editor.repoUrl) {
+        cloudRepositoryEditor = { ...editor, error: t('cloud.manager.repoRequired') };
+        renderCloudRepositoryDialog({ focusEditor: true });
+        return;
+    }
+    const urlInput = cloudRepositoryDialog?.querySelector('#cvt_cloud_manager_repo_url');
+    if (urlInput && !urlInput.checkValidity()) {
+        cloudRepositoryEditor = { ...editor, error: t('cloud.manager.repoInvalid') };
+        urlInput.reportValidity?.();
+        return;
+    }
+
+    const payload = getCloudConfigPayloadFromManager();
+    cloudRepositoryDialogBusy = true;
+    cloudRepositoryEditor = { ...editor, error: '' };
+    renderCloudRepositoryDialog();
+    try {
+        await connectCloudPanel(payload);
+        cloudRepositoryEditor = null;
+    } catch (error) {
+        console.error('[chat-vault] Failed to save and connect cloud repository:', error);
+        cloudRepositoryEditor = reconcileCloudRepositoryEditorAfterConnectFailure(editor, error);
+        toastr.error(t('cloud.toasts.connectFailed'), getAppTitle());
+    } finally {
+        cloudRepositoryDialogBusy = false;
+        renderCloudRepositoryDialog({ focusEditor: Boolean(cloudRepositoryEditor?.error) });
+    }
 }
 
 function applyCloudConfigToDom(config = null) {
-    const repoUrlInput = document.getElementById('cvt_cloud_repo_url');
-    const branchInput = document.getElementById('cvt_cloud_branch');
-    const tokenInput = document.getElementById('cvt_cloud_token');
-    const tokenHint = document.getElementById('cvt_cloud_token_hint');
-    const deviceNameInput = document.getElementById('cvt_cloud_device_name');
-    const syncPinnedInput = document.getElementById('cvt_cloud_sync_pinned');
-    const syncLatestInput = document.getElementById('cvt_cloud_sync_latest');
-
-    if (repoUrlInput) repoUrlInput.value = String(config?.repoUrl || '');
-    if (branchInput) branchInput.value = String(config?.branch || 'main');
-    if (deviceNameInput) deviceNameInput.value = String(config?.deviceName || '');
-    if (syncPinnedInput) syncPinnedInput.checked = config?.syncPinned !== false;
-    if (syncLatestInput) syncLatestInput.checked = config?.syncLatestStable !== false;
-    if (tokenInput) {
-        tokenInput.value = '';
-        tokenInput.placeholder = config?.hasToken ? t('cloud.fields.tokenSaved') : t('cloud.fields.tokenPlaceholder');
+    if (cloudRepositoryDialog && !cloudRepositoryDialogBusy) {
+        renderCloudRepositoryDialog();
     }
-    if (tokenHint) {
-        tokenHint.textContent = config?.hasToken ? t('cloud.fields.tokenHintSaved') : t('cloud.fields.tokenHint');
-    }
+    renderCloudActionState(config, cloudManifestCache || buildEmptyCloudManifest());
 }
 
 function buildCloudScopeItem(scope) {
@@ -2086,7 +2795,8 @@ async function refreshCloudScopes({ quiet = false } = {}) {
         return;
     }
 
-    if (!cloudConfigCache?.repoUrl || !cloudConfigCache?.hasToken) {
+    const repositories = Array.isArray(cloudConfigCache?.repositories) ? cloudConfigCache.repositories : [];
+    if (!repositories.length || !repositories.some((repository) => repository?.hasToken) || !cloudConfigCache?.repoUrl) {
         renderCloudStatus(cloudConfigCache || {}, cloudManifestCache || buildEmptyCloudManifest());
         const container = document.getElementById('cvt_cloud_scope_list');
         if (container) {
@@ -2125,30 +2835,23 @@ function openCloudScope(scopeId) {
     renderCloudCheckpointList();
 }
 
-function getCloudConfigFromDom() {
+function getCloudConfigPayloadFromCache() {
+    const config = cloudConfigCache && typeof cloudConfigCache === 'object' ? cloudConfigCache : {};
     return {
-        repoUrl: String(document.getElementById('cvt_cloud_repo_url')?.value || '').trim(),
-        branch: String(document.getElementById('cvt_cloud_branch')?.value || '').trim() || 'main',
-        githubToken: String(document.getElementById('cvt_cloud_token')?.value || '').trim(),
-        deviceName: String(document.getElementById('cvt_cloud_device_name')?.value || '').trim(),
-        syncPinned: Boolean(document.getElementById('cvt_cloud_sync_pinned')?.checked),
-        syncLatestStable: Boolean(document.getElementById('cvt_cloud_sync_latest')?.checked),
+        repositories: (Array.isArray(config.repositories) ? config.repositories : []).map((repository) => ({
+            repositoryId: String(repository?.repositoryId || ''),
+            repoUrl: String(repository?.repoUrl || '').trim(),
+            branch: String(repository?.branch || '').trim() || 'main',
+        })),
+        deviceName: String(config.deviceName || ''),
+        syncPinned: config.syncPinned !== false,
+        syncLatestStable: config.syncLatestStable !== false,
+        catalogRepositoryId: String(config.catalogRepositoryId || ''),
     };
 }
 
-async function saveCloudConfigFromDom({ quiet = false } = {}) {
-    const result = await callApi('/cloud/config/save', getCloudConfigFromDom());
-    cloudConfigCache = result.config || {};
-    applyCloudConfigToDom(cloudConfigCache);
-    renderCloudStatus(cloudConfigCache, cloudManifestCache || buildEmptyCloudManifest());
-    if (!quiet) {
-        toastr.success(t('cloud.toasts.configSaved'), getAppTitle());
-    }
-    return result;
-}
-
-async function connectCloudPanel() {
-    const saved = await saveCloudConfigFromDom({ quiet: true });
+async function connectCloudPanel(payload = getCloudConfigPayloadFromCache()) {
+    const saved = await saveCloudConfig(payload, { quiet: true });
     const result = await callApi('/cloud/connect', {});
     cloudConfigCache = result.config || saved.config || {};
     cloudManifestCache = result.manifest || buildEmptyCloudManifest();
@@ -2156,13 +2859,25 @@ async function connectCloudPanel() {
     renderCloudStatus(cloudConfigCache, cloudManifestCache);
     renderCloudScopeList();
     renderCloudCheckpointList();
-    toastr.success(t('cloud.toasts.connected'), getAppTitle());
+    const failedMembers = Number(result.manifest?.failedMemberCount || 0);
+    if (failedMembers > 0) {
+        toastr.warning(t('cloud.toasts.connectedPartial', { members: failedMembers }), getAppTitle());
+    } else {
+        toastr.success(t('cloud.toasts.connected'), getAppTitle());
+    }
 }
 
 async function syncCloudNow() {
+    if (!cloudConfigCache) {
+        await refreshCloudStatus({ quiet: true });
+    }
+    if (!hasCloudConnectionConfig(cloudConfigCache)) {
+        openCloudRepositoryDialog();
+        return;
+    }
+
     setCloudToolbarBusyState(true);
     try {
-        await saveCloudConfigFromDom({ quiet: true });
         const result = await callApi('/cloud/sync/push', {});
         cloudConfigCache = result.config || cloudConfigCache || {};
         cloudManifestCache = result.manifest || buildEmptyCloudManifest();
@@ -2170,7 +2885,8 @@ async function syncCloudNow() {
         renderCloudStatus(cloudConfigCache, cloudManifestCache);
         renderCloudScopeList();
         renderCloudCheckpointList();
-        const toastKey = Number(result.skippedCount || 0) > 0
+        const failedMembers = Array.isArray(result.failedRepositoryIds) ? result.failedRepositoryIds.length : 0;
+        const toastKey = Number(result.skippedCount || 0) > 0 || failedMembers > 0
             ? 'cloud.toasts.syncedPartial'
             : 'cloud.toasts.synced';
         const toastArgs = {
@@ -2178,6 +2894,7 @@ async function syncCloudNow() {
             snapshots: result.snapshotCount || 0,
             resources: result.resourceCount || 0,
             skipped: result.skippedCount || 0,
+            members: failedMembers,
         };
         if (toastKey === 'cloud.toasts.syncedPartial') {
             toastr.warning(t(toastKey, toastArgs), getAppTitle());
@@ -2189,15 +2906,16 @@ async function syncCloudNow() {
     }
 }
 
-async function fetchCloudSnapshot(scopeId, snapshotId) {
+async function fetchCloudSnapshot(scopeId, snapshotId, repositoryId) {
     return callApi('/cloud/snapshot/get', {
         scopeId,
         snapshotId,
+        repositoryId,
     });
 }
 
-async function previewCloudSnapshot(scopeId, snapshotId) {
-    const result = await fetchCloudSnapshot(scopeId, snapshotId);
+async function previewCloudSnapshot(scopeId, snapshotId, repositoryId) {
+    const result = await fetchCloudSnapshot(scopeId, snapshotId, repositoryId);
     const messages = (Array.isArray(result.messages) ? result.messages : []).slice(-Math.max(1, Number(getSettings().previewMessages || 12)));
     const previewMessages = messages.map((message) => ({
         name: message?.name || '',
@@ -2207,11 +2925,12 @@ async function previewCloudSnapshot(scopeId, snapshotId) {
     await showPreviewPopup(previewMessages);
 }
 
-async function restoreCloudSnapshotAsNew(scopeId, snapshotId) {
+async function restoreCloudSnapshotAsNew(scopeId, snapshotId, repositoryId) {
     toastr.info(t('cloud.toasts.restoreStarting'), getAppTitle(), { timeOut: 1200 });
     const result = await callApi('/cloud/snapshot/prepare-restore', {
         scopeId,
         snapshotId,
+        repositoryId,
     });
     await refreshImportedCloudResources(result.resourceImport || null);
     await restoreMessagesAsNew(
@@ -2225,11 +2944,12 @@ async function restoreCloudSnapshotAsNew(scopeId, snapshotId) {
     );
 }
 
-async function importCloudSnapshot(scopeId, snapshotId) {
+async function importCloudSnapshot(scopeId, snapshotId, repositoryId) {
     toastr.info(t('cloud.toasts.importStarting'), getAppTitle(), { timeOut: 1200 });
     const result = await callApi('/cloud/snapshot/import', {
         scopeId,
         snapshotId,
+        repositoryId,
     });
     await refreshImportedCloudResources(result.resourceImport || null);
     await refreshStatus({ quiet: true });
@@ -2239,7 +2959,7 @@ async function importCloudSnapshot(scopeId, snapshotId) {
     );
 }
 
-async function deleteCloudSnapshot(scopeId, snapshotId) {
+async function deleteCloudSnapshot(scopeId, snapshotId, repositoryId) {
     const confirm = await Popup.show.confirm(
         t('cloud.deleteConfirmTitle'),
         t('cloud.deleteConfirmBody'),
@@ -2254,6 +2974,7 @@ async function deleteCloudSnapshot(scopeId, snapshotId) {
         const result = await callApi('/cloud/snapshot/delete', {
             scopeId,
             snapshotId,
+            repositoryId,
         });
         cloudConfigCache = result.config || cloudConfigCache || {};
         cloudManifestCache = result.manifest || buildEmptyCloudManifest();
@@ -3424,11 +4145,11 @@ function renderWizardStep2() {
         `;
     }).join('');
 
-    const primary = cvmState.preview?.primary || cvmState.primary;
-    const secondary = cvmState.preview?.secondary || cvmState.secondary;
     const emptyDiffNote = (diffCount === 0 && !showAll)
         ? `<p class="cvt-note cvt-note-strong">${cvmEscapeHtml(t('characterMerge.diff.allSame'))}</p>`
         : '';
+    const primary = cvmState.preview?.primary || cvmState.primary;
+    const secondary = cvmState.preview?.secondary || cvmState.secondary;
 
     return `
         <p class="cvt-note">${cvmEscapeHtml(t('characterMerge.wizard.step2.intro'))}</p>
@@ -3699,33 +4420,19 @@ function attachDomListeners() {
         }
     });
 
-    $(document).on('click', '#cvt_cloud_save_config', async () => {
-        try {
-            toastr.info(t('cloud.toasts.configSaveStarting'), getAppTitle(), { timeOut: 1000 });
-            setCloudToolbarBusyState(true);
-            await saveCloudConfigFromDom();
-        } catch (error) {
-            console.error('[chat-vault] Failed to save cloud config:', error);
-            toastr.error(t('cloud.toasts.configSaveFailed'), getAppTitle());
-        } finally {
-            setCloudToolbarBusyState(false);
-        }
+    $(document).on('click', '#cvt_cloud_manage', () => {
+        openCloudRepositoryDialog();
     });
 
-    $(document).on('click', '#cvt_cloud_connect', async () => {
-        try {
-            toastr.info(t('cloud.toasts.connectStarting'), getAppTitle(), { timeOut: 1200 });
-            setCloudToolbarBusyState(true);
-            await connectCloudPanel();
-        } catch (error) {
-            console.error('[chat-vault] Failed to connect cloud panel:', error);
-            toastr.error(t('cloud.toasts.connectFailed'), getAppTitle());
-        } finally {
-            setCloudToolbarBusyState(false);
-        }
+    $(document).on('click', '#cvt_cloud_help', () => {
+        openCloudHelpDialog();
     });
 
     $(document).on('click', '#cvt_cloud_sync', async () => {
+        if (!hasCloudConnectionConfig(cloudConfigCache)) {
+            openCloudRepositoryDialog();
+            return;
+        }
         try {
             toastr.info(t('cloud.toasts.syncStarting'), getAppTitle(), { timeOut: 1400 });
             await syncCloudNow();
@@ -3736,6 +4443,10 @@ function attachDomListeners() {
     });
 
     $(document).on('click', '#cvt_cloud_refresh', async () => {
+        if (!hasCloudConnectionConfig(cloudConfigCache)) {
+            openCloudRepositoryDialog();
+            return;
+        }
         try {
             toastr.info(t('cloud.toasts.refreshStarting'), getAppTitle(), { timeOut: 1000 });
             setCloudToolbarBusyState(true);
@@ -3877,29 +4588,30 @@ function attachDomListeners() {
     $(document).on('click', '#cvt_cloud_checkpoint_list [data-action]', async function () {
         const action = this.dataset.action;
         const snapshotId = this.dataset.snapshotId;
+        const repositoryId = this.dataset.repositoryId;
         const scopeId = activeCloudScopeId;
-        if (!scopeId || !snapshotId) {
+        if (!scopeId || !snapshotId || !repositoryId) {
             return;
         }
 
         try {
             if (action === 'cloud-preview') {
-                await previewCloudSnapshot(scopeId, snapshotId);
+                await previewCloudSnapshot(scopeId, snapshotId, repositoryId);
                 return;
             }
 
             if (action === 'cloud-import') {
-                await importCloudSnapshot(scopeId, snapshotId);
+                await importCloudSnapshot(scopeId, snapshotId, repositoryId);
                 return;
             }
 
             if (action === 'cloud-restore-new') {
-                await restoreCloudSnapshotAsNew(scopeId, snapshotId);
+                await restoreCloudSnapshotAsNew(scopeId, snapshotId, repositoryId);
                 return;
             }
 
             if (action === 'cloud-delete') {
-                await deleteCloudSnapshot(scopeId, snapshotId);
+                await deleteCloudSnapshot(scopeId, snapshotId, repositoryId);
                 return;
             }
         } catch (error) {

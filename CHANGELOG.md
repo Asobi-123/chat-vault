@@ -5,7 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.4.0] - 2026-07-25
+
+### Added
+
+- Cloud Vault can now use an optional repository pool. Add multiple Git repositories from the panel; new chat scopes are placed in the lighter healthy repository while the panel shows their backups together.
+- Cloud backup cards now identify their source repository. Preview, import, restore-as-new, and explicit delete always act on that repository.
+
+### Changed
+
+- Cloud Vault now opens on sync, repository management, help, and remote browsing. Repository setup is contained in `Manage Repositories`; cancelling a new repository leaves no empty entry.
+- Existing single-repository setups continue to work without setup changes. Existing cloud backups stay in place, and a chat scope keeps its assigned repository after later repositories are added.
+
+### Reliability
+
+- A repository failure no longer stops healthy repositories from syncing. Affected chat scopes are reported separately.
+- A chat scope's snapshots, large-chat chunks, and linked resources remain together in one ordinary Git repository. No Git LFS or external object storage is required.
 
 ## [0.3.4] - 2026-07-24
 

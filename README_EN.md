@@ -28,7 +28,7 @@ All independent backups and unsaved edits are written to:
 - **Chat rename continuity** through scope rebind when SillyTavern renames a chat
 - **Faster disk flush** by calling `context.saveChat()` after commit events
 - **Backup management** with preview, restore-as-new, overwrite-current, long-term keep, rename, and delete
-- **Git Cloud Vault** that pushes long-term and stable backups into a separate Git repository for cross-device recovery
+- **Git Cloud Vault / repository pool** that pushes long-term and stable backups into one or more separate Git repositories for cross-device recovery
 - **Automatic large-chat chunking** that transparently splits cloud snapshots above 40 MiB into compressed small Git objects, with no extra setup
 - **Resource-aware cloud restore** that can bring over character cards, personas, lorebooks, and groups together with the chat
 - **Append-only cloud retention with manual cleanup** so local deletion does not silently wipe older cloud copies
@@ -94,7 +94,7 @@ It does not automatically delete existing backup data under `user/files/chat-vau
 1. Open the `Chat Vault` drawer in extension settings, or tap the floating orb
 2. In **Current Chat**, view unsaved edits, auto backups, and manual backups
 3. In **Disaster Recovery**, browse global chat scopes and restore any backup as a new chat
-4. In **Cloud Vault**, configure the Git repository, sync to the remote vault, browse and search the remote catalog, and import or restore remote backups
+4. In **Cloud Vault**, select `Manage Repositories` to connect the first Git repository; add repositories from the same place when more capacity is needed, then sync, browse the combined catalog, search remote backups, and import or restore them
 5. In **Card Merge**, clean up same-name duplicate character cards by merging their chats and backups into a single canonical PNG
 6. In **Settings**, adjust auto backup count, flush delay, draft sync interval, naming templates, and themes
 
@@ -113,6 +113,7 @@ It does not automatically delete existing backup data under `user/files/chat-vau
 - Global scope index: `scopes-index.json`
 - Scope alias bindings: `scope-aliases.json`
 - Cloud config: `cloud-config.json`
+- Pool descriptor: `cloud/remotes/<repoKey>/repo/vault-pool.json`
 - Per-scope directory: `scopes/<label>__<scopeId>/`
 - Backup index: `index.json`
 - Unsaved edit mirror: `draft.json`
@@ -177,6 +178,16 @@ Local Chat Vault storage is still the main recovery chain.
 Cloud Vault automatically writes snapshots above 40 MiB as compressed small chunks and restores them transparently. It does not require Git LFS, another account, or extra settings.
 If one local snapshot is unreadable, that sync skips it and continues with the other chats; the original file remains in local Chat Vault.
 The Git remote is a low-frequency off-site vault.
+
+**Q: Can I spread backups across multiple GitHub repositories?**
+
+Yes. In **Cloud Vault**, select `Manage Repositories`, then `Add Repository`. Enter the new repository URL and use `Add and Connect` to save and verify it; cancelling leaves no empty repository behind. The saved access token is reused by default; enter the optional access token only when that repository needs different credentials.
+
+Each chat scope receives one fixed home repository. Its complete snapshots, chunks, and linked resources stay together there, so recovery never has to assemble one chat across repositories. New scopes are assigned to the currently lighter repository. Previously published scopes are never moved or deleted automatically.
+
+On another device, connect the catalog repository using the normal first-repository flow to discover the additional repository URLs. Private additional repositories still need a token available on that device. Tokens are never stored in the remote descriptor.
+
+If one additional repository is temporarily unavailable, only its assigned scopes are unavailable; the other repositories continue to sync. The pool does not automatically remove a repository or rebalance old data, preventing accidental migration of historical backups.
 
 **Q: What is the difference between `Import Local` and `Restore as New Chat`?**
 

@@ -16,6 +16,19 @@ import {
     readSnapshotFile as readSnapshotFileFromPath,
     writeCloudSnapshotStorage,
 } from './cloud-snapshot.mjs';
+import {
+    adoptCloudPoolDescriptor,
+    assignCloudPoolScopes,
+    backfillCatalogScopeHomes,
+    buildAggregateCloudManifest,
+    buildCloudPoolDescriptor,
+    getCloudPoolRepository,
+    getCloudPoolRepositoryDisplayName,
+    getCloudPoolRepositoryToken,
+    getSafeCloudPoolConfig,
+    normalizeCloudPoolConfig,
+    validateCloudPoolDescriptor,
+} from './cloud-pool.mjs';
 
 export const info = {
     id: 'chat-vault',
@@ -40,6 +53,7 @@ const CLOUD_RESOURCE_META_DIRECTORY_NAME = 'resource-meta';
 const CLOUD_RESOURCE_DATA_DIRECTORY_NAME = 'resource-data';
 const CLOUD_MARKER_FILE_NAME = 'vault.json';
 const CLOUD_MANIFEST_FILE_NAME = 'manifest.json';
+const CLOUD_POOL_DESCRIPTOR_FILE_NAME = 'vault-pool.json';
 const CLOUD_FORMAT_VERSION = 1;
 const DEFAULT_CLOUD_BRANCH = 'main';
 const DEFAULT_MAX_AUTO_SNAPSHOTS = 1;
@@ -50,6 +64,7 @@ const PENDING_MERGE_FILE_NAME = 'pending-merge.json';
 const MERGE_INFO_FILE_NAME = 'merge-info.json';
 const MERGE_BACKUP_RETENTION = 5;
 const cloudRepoOperationQueue = new Map();
+const cloudPoolOperationQueue = new Map();
 
 function assertUser(request, response) {
     if (!request.user?.directories?.files) {
@@ -1235,35 +1250,26 @@ function createCloudDeviceId() {
 }
 
 function buildEmptyCloudConfig() {
-    return {
-        version: CLOUD_FORMAT_VERSION,
-        repoUrl: '',
-        branch: DEFAULT_CLOUD_BRANCH,
-        githubToken: '',
-        deviceId: createCloudDeviceId(),
-        deviceName: '',
-        syncPinned: true,
-        syncLatestStable: true,
-        syncDrafts: false,
-        lastPulledAt: 0,
-        lastPushedAt: 0,
-    };
+    return normalizeCloudConfig({});
 }
 
 function normalizeCloudConfig(rawConfig) {
-    const config = asObject(rawConfig);
+    const config = normalizeCloudPoolConfig(rawConfig, {
+        defaultBranch: DEFAULT_CLOUD_BRANCH,
+        createDevice: createCloudDeviceId,
+    });
+    const catalog = getCloudPoolRepository(config, config.catalogRepositoryId);
     return {
-        version: CLOUD_FORMAT_VERSION,
-        repoUrl: asString(config.repoUrl).trim(),
-        branch: asString(config.branch).trim() || DEFAULT_CLOUD_BRANCH,
-        githubToken: asString(config.githubToken).trim(),
-        deviceId: asString(config.deviceId).trim() || createCloudDeviceId(),
-        deviceName: asString(config.deviceName).trim(),
-        syncPinned: config.syncPinned === undefined ? true : Boolean(config.syncPinned),
-        syncLatestStable: config.syncLatestStable === undefined ? true : Boolean(config.syncLatestStable),
-        syncDrafts: Boolean(config.syncDrafts),
-        lastPulledAt: Math.trunc(asFiniteNumber(config.lastPulledAt, 0)),
-        lastPushedAt: Math.trunc(asFiniteNumber(config.lastPushedAt, 0)),
+        ...config,
+        // Keep the catalog member as a temporary compatibility facade for the
+        // established per-repository Git helpers while pool orchestration is
+        // layered around them.
+        repositoryId: catalog?.repositoryId || '',
+        repoUrl: catalog?.repoUrl || '',
+        branch: catalog?.branch || DEFAULT_CLOUD_BRANCH,
+        githubToken: catalog ? getCloudPoolRepositoryToken(config, catalog.repositoryId) : '',
+        lastPulledAt: Math.trunc(asFiniteNumber(catalog?.lastPulledAt, 0)),
+        lastPushedAt: Math.trunc(asFiniteNumber(catalog?.lastPushedAt, 0)),
     };
 }
 
@@ -1276,28 +1282,77 @@ function readCloudConfig(baseDirectory) {
 }
 
 function saveCloudConfig(baseDirectory, rawConfig) {
-    const config = normalizeCloudConfig(rawConfig);
-    writeJsonAtomic(getCloudConfigPath(baseDirectory), config);
-    return config;
+    const persistedConfig = normalizeCloudPoolConfig(rawConfig, {
+        defaultBranch: DEFAULT_CLOUD_BRANCH,
+        createDevice: createCloudDeviceId,
+    });
+    writeJsonAtomic(getCloudConfigPath(baseDirectory), persistedConfig);
+    return normalizeCloudConfig(persistedConfig);
 }
 
 function getSafeCloudConfig(config) {
     const normalized = normalizeCloudConfig(config);
+    const safeConfig = getSafeCloudPoolConfig(normalized);
+    return {
+        ...safeConfig,
+        githubToken: '',
+        repoUrl: normalized.repoUrl,
+        branch: normalized.branch,
+        hasToken: Boolean(normalized.githubToken),
+        lastPulledAt: normalized.lastPulledAt,
+        lastPushedAt: normalized.lastPushedAt,
+    };
+}
+
+function getCloudRepositoryConfig(rawConfig, repositoryId) {
+    const config = normalizeCloudConfig(rawConfig);
+    const targetRepositoryId = asString(repositoryId).trim() || config.catalogRepositoryId;
+    const repository = getCloudPoolRepository(config, targetRepositoryId);
+    if (!repository) {
+        return {
+            ...config,
+            repositoryId: '',
+            repoUrl: '',
+            branch: DEFAULT_CLOUD_BRANCH,
+            githubToken: '',
+            lastPulledAt: 0,
+            lastPushedAt: 0,
+        };
+    }
+    return {
+        ...config,
+        ...repository,
+        githubToken: getCloudPoolRepositoryToken(config, repository.repositoryId),
+    };
+}
+
+function normalizeCloudRepositoryOperationConfig(rawConfig) {
+    const normalized = normalizeCloudConfig(rawConfig);
+    const raw = asObject(rawConfig);
+    const explicitRepoUrl = asString(raw.repoUrl).trim();
+    if (!explicitRepoUrl) {
+        return normalized;
+    }
     return {
         ...normalized,
-        githubToken: '',
-        hasToken: Boolean(normalized.githubToken),
+        repositoryId: asString(raw.repositoryId).trim() || normalized.repositoryId,
+        repoUrl: explicitRepoUrl,
+        branch: asString(raw.branch).trim() || normalized.branch || DEFAULT_CLOUD_BRANCH,
+        githubToken: raw.githubToken !== undefined
+            ? asString(raw.githubToken).trim()
+            : normalized.githubToken,
     };
 }
 
 function buildCloudRemoteKey(config) {
-    const repoUrl = asString(config.repoUrl).trim();
-    const branch = asString(config.branch).trim() || DEFAULT_CLOUD_BRANCH;
+    const operationConfig = normalizeCloudRepositoryOperationConfig(config);
+    const repoUrl = asString(operationConfig.repoUrl).trim();
+    const branch = asString(operationConfig.branch).trim() || DEFAULT_CLOUD_BRANCH;
     return sha1(`${repoUrl}|${branch}`).slice(0, 20);
 }
 
 function getCloudPaths(baseDirectory, rawConfig) {
-    const config = normalizeCloudConfig(rawConfig);
+    const config = normalizeCloudRepositoryOperationConfig(rawConfig);
     const cloudRoot = ensureDirectory(path.join(baseDirectory, CLOUD_ROOT_DIRECTORY_NAME));
     const remotesRoot = ensureDirectory(path.join(cloudRoot, CLOUD_REMOTES_DIRECTORY_NAME));
     const remoteRoot = ensureDirectory(path.join(remotesRoot, buildCloudRemoteKey(config)));
@@ -1315,6 +1370,7 @@ function getCloudPaths(baseDirectory, rawConfig) {
         remoteRoot,
         repoPath,
         markerPath: path.join(repoPath, CLOUD_MARKER_FILE_NAME),
+        poolDescriptorPath: path.join(repoPath, CLOUD_POOL_DESCRIPTOR_FILE_NAME),
         manifestPath: path.join(repoPath, CLOUD_MANIFEST_FILE_NAME),
         devicesRoot,
         objectsRoot,
@@ -1327,6 +1383,73 @@ function getCloudPaths(baseDirectory, rawConfig) {
     };
 }
 
+function readCloudPoolDescriptor(cloudPaths) {
+    return readJson(cloudPaths.poolDescriptorPath, null);
+}
+
+function writeCloudPoolDescriptor(cloudPaths, rawDescriptor) {
+    writeJsonAtomic(cloudPaths.poolDescriptorPath, rawDescriptor);
+    return rawDescriptor;
+}
+
+function assertCloudPoolRepositoryMembership(cloudPaths, rawConfig) {
+    const config = normalizeCloudConfig(rawConfig);
+    const storedDescriptor = readCloudPoolDescriptor(cloudPaths);
+    if (!storedDescriptor) {
+        if (config.repositories.length > 1) {
+            throw new Error('cloud_pool_descriptor_not_found');
+        }
+        return null;
+    }
+    const validation = validateCloudPoolDescriptor(storedDescriptor, config);
+    if (!validation.ok) {
+        throw new Error(validation.error);
+    }
+    return validation.descriptor;
+}
+
+function updateCloudRepositorySyncTimes(baseDirectory, rawConfig, repositoryId, timestamps) {
+    const config = normalizeCloudConfig(rawConfig);
+    const targetId = asString(repositoryId).trim();
+    const nextConfig = {
+        ...config,
+        repositories: config.repositories.map((repository) => repository.repositoryId === targetId
+            ? {
+                ...repository,
+                ...(timestamps.lastPulledAt === undefined ? {} : { lastPulledAt: timestamps.lastPulledAt }),
+                ...(timestamps.lastPushedAt === undefined ? {} : { lastPushedAt: timestamps.lastPushedAt }),
+            }
+            : repository),
+    };
+    return saveCloudConfig(baseDirectory, nextConfig);
+}
+
+function buildCloudMemberStatus(config, repositoryId, {
+    status = 'ready',
+    manifest = null,
+    stale = false,
+    error = '',
+} = {}) {
+    const member = getCloudPoolRepository(config, repositoryId);
+    return {
+        repositoryId,
+        repositoryName: getCloudPoolRepositoryDisplayName(member || { repositoryId }),
+        status,
+        manifest: manifest || buildEmptyCloudManifest(),
+        stale,
+        error: asString(error).trim(),
+    };
+}
+
+function getCachedCloudMemberManifest(baseDirectory, rawConfig, repositoryId) {
+    const memberConfig = getCloudRepositoryConfig(rawConfig, repositoryId);
+    if (!memberConfig.repoUrl) {
+        return buildEmptyCloudManifest();
+    }
+    const cloudPaths = getCloudPaths(baseDirectory, memberConfig);
+    return normalizeCloudManifest(readJson(cloudPaths.manifestPath, buildEmptyCloudManifest()));
+}
+
 function buildEmptyCloudManifest() {
     return {
         version: CLOUD_FORMAT_VERSION,
@@ -1334,6 +1457,7 @@ function buildEmptyCloudManifest() {
         scopeCount: 0,
         snapshotCount: 0,
         deviceCount: 0,
+        logicalBytes: 0,
         scopes: [],
     };
 }
@@ -1446,6 +1570,8 @@ function buildCloudMarker(config, existingMarker = null) {
         storage: 'git-cloud-vault',
         repoKey: buildCloudRemoteKey(config),
         branch: asString(config.branch).trim() || DEFAULT_CLOUD_BRANCH,
+        ...(asString(config.poolId).trim() ? { poolId: asString(config.poolId).trim() } : {}),
+        ...(asString(config.repositoryId).trim() ? { repositoryId: asString(config.repositoryId).trim() } : {}),
         createdAt: Math.trunc(asFiniteNumber(previous.createdAt, Date.now())),
     };
 }
@@ -1521,6 +1647,7 @@ function normalizeCloudManifest(rawManifest) {
         scopeCount: Math.trunc(asFiniteNumber(manifest.scopeCount, 0)),
         snapshotCount: Math.trunc(asFiniteNumber(manifest.snapshotCount, 0)),
         deviceCount: Math.trunc(asFiniteNumber(manifest.deviceCount, 0)),
+        logicalBytes: Math.trunc(asFiniteNumber(manifest.logicalBytes, 0)),
         scopes: asArray(manifest.scopes)
             .map((scope) => asObject(scope))
             .filter((scope) => asString(scope.scopeId).trim()),
@@ -2096,6 +2223,22 @@ async function withCloudRepoOperationLock(repoPath, task) {
     }
 }
 
+async function withCloudPoolOperationLock(baseDirectory, task) {
+    const key = path.resolve(baseDirectory);
+    const previous = cloudPoolOperationQueue.get(key) || Promise.resolve();
+    const next = previous
+        .catch(() => undefined)
+        .then(task);
+    cloudPoolOperationQueue.set(key, next);
+    try {
+        return await next;
+    } finally {
+        if (cloudPoolOperationQueue.get(key) === next) {
+            cloudPoolOperationQueue.delete(key);
+        }
+    }
+}
+
 function runGit(args, { cwd, allowFailure = false, configArgs = [] } = {}) {
     return new Promise((resolve, reject) => {
         // configArgs (e.g. ['-c', 'http.extraHeader=...']) are process-level `git -c`
@@ -2272,6 +2415,14 @@ async function ensureCloudRepositoryReady(baseDirectory, config) {
             if (pluginId !== info.id || storageKind !== 'git-cloud-vault') {
                 throw new Error('remote repository is not a Chat Vault cloud repository');
             }
+            const markerPoolId = asString(marker.poolId).trim();
+            const markerRepositoryId = asString(marker.repositoryId).trim();
+            if (!config.allowPoolAdoption && markerPoolId && markerPoolId !== asString(config.poolId).trim()) {
+                throw new Error('cloud_pool_id_mismatch');
+            }
+            if (!config.allowPoolAdoption && markerRepositoryId && markerRepositoryId !== asString(config.repositoryId).trim()) {
+                throw new Error('cloud_pool_repository_id_mismatch');
+            }
         } else {
             const children = fs.readdirSync(cloudPaths.repoPath).filter((item) => item !== '.git');
             if (children.length > 0) {
@@ -2307,13 +2458,60 @@ function getLatestStableEntry(entries) {
     return normalizedEntries.find((entry) => entry.mode !== 'auto') || normalizedEntries[0] || null;
 }
 
+function collectLocalCloudScopeCandidates(baseDirectory, config) {
+    const scopesRoot = ensureDirectory(path.join(baseDirectory, 'scopes'));
+    const candidates = [];
+    for (const scopeDirectory of listScopeDirectories(scopesRoot)) {
+        const index = readJson(path.join(scopeDirectory, INDEX_FILE_NAME), null);
+        const source = asObject(index?.source);
+        const scopeId = asString(source.scopeKey).trim() || path.basename(scopeDirectory).split('__').pop() || '';
+        if (!scopeId) {
+            continue;
+        }
+        const entries = asArray(index?.entries)
+            .map((entry) => asObject(entry))
+            .filter((entry) => asString(entry.id).trim())
+            .sort((left, right) => Number(right.createdAt || 0) - Number(left.createdAt || 0));
+        const selectedEntries = new Map();
+        if (config.syncPinned) {
+            for (const entry of entries) {
+                if (entry.pinned) {
+                    selectedEntries.set(entry.id, entry);
+                }
+            }
+        }
+        if (config.syncLatestStable) {
+            const latestStableEntry = getLatestStableEntry(entries);
+            if (latestStableEntry) {
+                selectedEntries.set(latestStableEntry.id, latestStableEntry);
+            }
+        }
+        if (selectedEntries.size === 0) {
+            continue;
+        }
+        const logicalBytes = Array.from(selectedEntries.values()).reduce((sum, entry) => {
+            const snapshotPath = path.join(scopeDirectory, 'snapshots', asString(entry.snapshotFile).trim());
+            try {
+                return sum + (fs.existsSync(snapshotPath) ? fs.statSync(snapshotPath).size : 0);
+            } catch {
+                return sum;
+            }
+        }, 0);
+        candidates.push({ scopeId, logicalBytes });
+    }
+    return candidates;
+}
+
 function collectLocalCloudSelection(baseDirectory, config, directories, cloudPaths = null) {
     const scopesRoot = ensureDirectory(path.join(baseDirectory, 'scopes'));
     const scopes = [];
     const skipped = [];
     const streamingPersist = Boolean(cloudPaths);
+    const resolveCloudPaths = typeof cloudPaths === 'function'
+        ? cloudPaths
+        : () => cloudPaths;
     const selectionResources = streamingPersist ? null : new Map();
-    const persistedResourceKeys = streamingPersist ? new Set() : null;
+    const persistedResourceKeys = streamingPersist ? new Map() : null;
 
     for (const scopeDirectory of listScopeDirectories(scopesRoot)) {
         const index = readJson(path.join(scopeDirectory, INDEX_FILE_NAME), null);
@@ -2353,6 +2551,25 @@ function collectLocalCloudSelection(baseDirectory, config, directories, cloudPat
             label: getSourceLabel(source),
             source,
         };
+        const targetCloudPaths = streamingPersist ? resolveCloudPaths(scopeId) : null;
+        if (streamingPersist && !targetCloudPaths) {
+            for (const entry of selectedEntries.values()) {
+                skipped.push({
+                    scopeId,
+                    label: scopeView.label,
+                    localSnapshotId: asString(entry.id).trim(),
+                    snapshotFile: asString(entry.snapshotFile).trim(),
+                    reason: 'Assigned cloud repository is unavailable',
+                });
+            }
+            continue;
+        }
+        const targetResourceKeys = streamingPersist
+            ? (persistedResourceKeys.get(targetCloudPaths.repoPath) || new Set())
+            : null;
+        if (streamingPersist && !persistedResourceKeys.has(targetCloudPaths.repoPath)) {
+            persistedResourceKeys.set(targetCloudPaths.repoPath, targetResourceKeys);
+        }
         const scopeEntries = [];
         for (const entry of selectedEntries.values()) {
             const snapshotFile = asString(entry.snapshotFile).trim();
@@ -2370,7 +2587,7 @@ function collectLocalCloudSelection(baseDirectory, config, directories, cloudPat
                 if (directories) {
                     if (streamingPersist) {
                         resourceBundle = collectLocalSnapshotResourceBundle(directories, source, snapshot, (record) => {
-                            persistCloudResourceImmediately(cloudPaths, record, persistedResourceKeys);
+                            persistCloudResourceImmediately(targetCloudPaths, record, targetResourceKeys);
                         });
                     } else {
                         resourceBundle = collectLocalSnapshotResourceBundle(directories, source, snapshot);
@@ -2383,7 +2600,7 @@ function collectLocalCloudSelection(baseDirectory, config, directories, cloudPat
                 }
 
                 if (streamingPersist) {
-                    persistCloudEntrySnapshot(cloudPaths, config, scopeView, {
+                    persistCloudEntrySnapshot(targetCloudPaths, config, scopeView, {
                         ...entry,
                         scopeId,
                         snapshotId,
@@ -2397,6 +2614,7 @@ function collectLocalCloudSelection(baseDirectory, config, directories, cloudPat
                         snapshotId,
                         fingerprint,
                         resources: resourceBundle.refs,
+                        repositoryId: targetCloudPaths.repositoryId || '',
                     });
                 } else {
                     scopeEntries.push({
@@ -2427,6 +2645,7 @@ function collectLocalCloudSelection(baseDirectory, config, directories, cloudPat
             scopeId,
             label: scopeView.label,
             source,
+            repositoryId: targetCloudPaths?.repositoryId || '',
             entries: scopeEntries.sort((left, right) => Number(right.createdAt || 0) - Number(left.createdAt || 0)),
         });
     }
@@ -2436,7 +2655,9 @@ function collectLocalCloudSelection(baseDirectory, config, directories, cloudPat
         scopeCount: scopes.length,
         snapshotCount: scopes.reduce((sum, scope) => sum + scope.entries.length, 0),
         resources: streamingPersist ? [] : Array.from(selectionResources.values()),
-        resourceCount: streamingPersist ? persistedResourceKeys.size : selectionResources.size,
+        resourceCount: streamingPersist
+            ? Array.from(persistedResourceKeys.values()).reduce((sum, keys) => sum + keys.size, 0)
+            : selectionResources.size,
         skipped,
         skippedCount: skipped.length,
     };
@@ -2488,6 +2709,9 @@ function persistCloudEntrySnapshot(cloudPaths, config, scope, entry) {
             jsonl: entry.jsonl,
         })
         : existingStorage;
+    const logicalBytes = typeof entry.jsonl === 'string'
+        ? Buffer.byteLength(entry.jsonl, 'utf8')
+        : Math.trunc(asFiniteNumber(existingMeta?.logicalBytes, asFiniteNumber(snapshotStorage.rawSize, 0)));
     const nextMeta = {
         version: CLOUD_FORMAT_VERSION,
         scopeId: scope.scopeId,
@@ -2506,6 +2730,7 @@ function persistCloudEntrySnapshot(cloudPaths, config, scope, entry) {
         lastMessagePreview: asString(entry.lastMessagePreview),
         lastMessageName: asString(entry.lastMessageName),
         lastMessageAt: asString(entry.lastMessageAt),
+        logicalBytes,
         resources: mergedResources,
         snapshotPath: snapshotStorage.format === 'chunked-gzip-v1' ? '' : objectPaths.snapshotRelativePath,
         ...(Object.keys(snapshotStorage).length > 0 ? { snapshotStorage } : {}),
@@ -2819,6 +3044,7 @@ function rebuildCloudManifest(cloudPaths) {
                 lastMessagePreview: asString(entry.lastMessagePreview),
                 lastMessageName: asString(entry.lastMessageName),
                 lastMessageAt: asString(entry.lastMessageAt),
+                logicalBytes: Math.trunc(asFiniteNumber(entry.logicalBytes, asFiniteNumber(asObject(entry.snapshotStorage).rawSize, 0))),
                 label: asString(entry.label).trim(),
                 source: asObject(entry.source),
                 resources: normalizeCloudResourceRefs(entry.resources),
@@ -2833,6 +3059,7 @@ function rebuildCloudManifest(cloudPaths) {
             source: scopeRecord.source,
             updatedAt: entries[0]?.createdAt || 0,
             entryCount: entries.length,
+            logicalBytes: entries.reduce((sum, entry) => sum + Math.trunc(asFiniteNumber(entry.logicalBytes, 0)), 0),
             deviceCount: scopeRecord.devices.size,
             devices: Array.from(scopeRecord.devices, ([deviceId, deviceName]) => ({
                 deviceId,
@@ -2853,6 +3080,7 @@ function rebuildCloudManifest(cloudPaths) {
         scopeCount: scopes.length,
         snapshotCount: scopes.reduce((sum, scope) => sum + scope.entryCount, 0),
         deviceCount: allDevices.size,
+        logicalBytes: scopes.reduce((sum, scope) => sum + Math.trunc(asFiniteNumber(scope.logicalBytes, 0)), 0),
         scopes,
     };
 
@@ -2898,6 +3126,361 @@ async function connectCloudRemote(baseDirectory) {
             manifest,
         };
     });
+}
+
+function isCloudPoolDescriptorExpandable(validation, rawConfig) {
+    const descriptor = validation?.descriptor;
+    const config = normalizeCloudConfig(rawConfig);
+    if (!descriptor || descriptor.poolId !== config.poolId || descriptor.catalogRepositoryId !== config.catalogRepositoryId) {
+        return false;
+    }
+    const configMembers = new Map(config.repositories.map((repository) => [repository.repositoryId, repository]));
+    return descriptor.members.every((member) => {
+        const configured = configMembers.get(member.repositoryId);
+        return configured && configured.repoUrl === member.repoUrl && configured.branch === member.branch;
+    });
+}
+
+async function commitCloudMemberChanges(baseDirectory, rawConfig, memberConfig, cloudPaths, message, {
+    markPushed = true,
+} = {}) {
+    const changed = await cloudRepositoryHasChanges(cloudPaths);
+    if (changed) {
+        await runGit(['add', '-A'], { cwd: cloudPaths.repoPath });
+        const commitResult = await runGit(['commit', '-m', message], {
+            cwd: cloudPaths.repoPath,
+            allowFailure: true,
+        });
+        if (!commitResult.ok && !commitResult.stderr.toLowerCase().includes('nothing to commit')) {
+            throw new Error(commitResult.stderr || 'failed to commit cloud repository changes');
+        }
+        await pushCloudBranch(cloudPaths, memberConfig.branch, buildCloudGitAuthArgs(memberConfig));
+    }
+    const now = Date.now();
+    return {
+        config: updateCloudRepositorySyncTimes(baseDirectory, rawConfig, memberConfig.repositoryId, {
+            lastPulledAt: now,
+            ...(markPushed ? { lastPushedAt: now } : {}),
+        }),
+        pushed: changed,
+    };
+}
+
+async function openCloudPoolCatalog(baseDirectory) {
+    let config = readCloudConfig(baseDirectory);
+    if (!config.catalogRepositoryId || !config.repositories.length) {
+        throw new Error('repo_url_or_token_missing');
+    }
+    let catalogConfig = getCloudRepositoryConfig(config, config.catalogRepositoryId);
+    if (!catalogConfig.repoUrl || !catalogConfig.githubToken) {
+        throw new Error('repo_url_or_token_missing');
+    }
+
+    const repoPath = getCloudPaths(baseDirectory, catalogConfig).repoPath;
+    return withCloudRepoOperationLock(repoPath, async () => {
+        const cloudPaths = await ensureCloudRepositoryReady(baseDirectory, {
+            ...catalogConfig,
+            allowPoolAdoption: config.repositories.length === 1,
+        });
+        const storedDescriptor = readCloudPoolDescriptor(cloudPaths);
+        let descriptor;
+        if (storedDescriptor) {
+            let validation = validateCloudPoolDescriptor(storedDescriptor, config);
+            if (!validation.ok && config.repositories.length === 1) {
+                const remoteCatalog = validation.descriptor.members
+                    .find((member) => member.repositoryId === validation.descriptor.catalogRepositoryId);
+                if (remoteCatalog && remoteCatalog.repoUrl === catalogConfig.repoUrl && remoteCatalog.branch === catalogConfig.branch) {
+                    config = saveCloudConfig(baseDirectory, adoptCloudPoolDescriptor(config, validation.descriptor, {
+                        defaultBranch: DEFAULT_CLOUD_BRANCH,
+                        createDevice: createCloudDeviceId,
+                    }));
+                    catalogConfig = getCloudRepositoryConfig(config, config.catalogRepositoryId);
+                    validation = validateCloudPoolDescriptor(storedDescriptor, config);
+                }
+            }
+            if (!validation.ok && !isCloudPoolDescriptorExpandable(validation, config)) {
+                throw new Error(validation.error);
+            }
+            descriptor = validation.descriptor;
+        } else {
+            descriptor = buildCloudPoolDescriptor(config, null);
+        }
+        cloudPaths.repositoryId = catalogConfig.repositoryId;
+        const manifest = normalizeCloudManifest(readJson(cloudPaths.manifestPath, buildEmptyCloudManifest()));
+        descriptor = backfillCatalogScopeHomes(descriptor, manifest, config.catalogRepositoryId);
+        descriptor = buildCloudPoolDescriptor(config, descriptor, { scopeHomes: descriptor.scopeHomes });
+        return {
+            config,
+            catalogConfig,
+            cloudPaths,
+            descriptor,
+            manifest,
+        };
+    });
+}
+
+async function loadCloudPoolMember(baseDirectory, rawConfig, rawDescriptor, repositoryId) {
+    const config = normalizeCloudConfig(rawConfig);
+    const memberConfig = getCloudRepositoryConfig(config, repositoryId);
+    if (!memberConfig.repoUrl || !memberConfig.githubToken) {
+        throw new Error('repo_url_or_token_missing');
+    }
+    const repoPath = getCloudPaths(baseDirectory, memberConfig).repoPath;
+    return withCloudRepoOperationLock(repoPath, async () => {
+        const cloudPaths = await ensureCloudRepositoryReady(baseDirectory, memberConfig);
+        cloudPaths.repositoryId = memberConfig.repositoryId;
+        const marker = asObject(readJson(cloudPaths.markerPath, null));
+        if (memberConfig.repositoryId !== config.catalogRepositoryId
+            && asString(marker.plugin).trim() === info.id
+            && asString(marker.storage).trim() === 'git-cloud-vault'
+            && !asString(marker.poolId).trim()) {
+            throw new Error('cloud_pool_member_requires_empty_repository');
+        }
+        const storedDescriptor = readCloudPoolDescriptor(cloudPaths);
+        if (storedDescriptor) {
+            const validation = validateCloudPoolDescriptor(storedDescriptor, config);
+            if (!validation.ok && !isCloudPoolDescriptorExpandable(validation, config)) {
+                throw new Error(validation.error);
+            }
+        }
+        return {
+            repositoryId: memberConfig.repositoryId,
+            memberConfig,
+            cloudPaths,
+            manifest: normalizeCloudManifest(readJson(cloudPaths.manifestPath, buildEmptyCloudManifest())),
+        };
+    });
+}
+
+function writeCloudPoolMemberMetadata(member, descriptor) {
+    writeCloudMarker(member.cloudPaths, member.memberConfig);
+    writeCloudPoolDescriptor(member.cloudPaths, descriptor);
+}
+
+function buildCloudPoolMemberSelection(selection, descriptor, repositoryId) {
+    const scopes = selection.scopes.filter((scope) => scope.repositoryId === repositoryId);
+    const skipped = selection.skipped.filter((item) => descriptor.scopeHomes[asString(item.scopeId).trim()]?.repositoryId === repositoryId);
+    return {
+        ...selection,
+        scopes,
+        scopeCount: scopes.length,
+        snapshotCount: scopes.reduce((sum, scope) => sum + scope.entries.length, 0),
+        resourceCount: 0,
+        skipped,
+        skippedCount: skipped.length,
+    };
+}
+
+async function connectCloudPool(baseDirectory) {
+    const opened = await openCloudPoolCatalog(baseDirectory);
+    let config = opened.config;
+    const members = new Map([[opened.catalogConfig.repositoryId, {
+        repositoryId: opened.catalogConfig.repositoryId,
+        memberConfig: opened.catalogConfig,
+        cloudPaths: opened.cloudPaths,
+        manifest: opened.manifest,
+    }]]);
+    const statuses = new Map([[opened.catalogConfig.repositoryId, buildCloudMemberStatus(config, opened.catalogConfig.repositoryId, {
+        manifest: opened.manifest,
+    })]]);
+
+    for (const repository of config.repositories) {
+        if (repository.repositoryId === opened.catalogConfig.repositoryId) {
+            continue;
+        }
+        try {
+            const member = await loadCloudPoolMember(baseDirectory, config, opened.descriptor, repository.repositoryId);
+            members.set(repository.repositoryId, member);
+            statuses.set(repository.repositoryId, buildCloudMemberStatus(config, repository.repositoryId, {
+                manifest: member.manifest,
+            }));
+        } catch (error) {
+            statuses.set(repository.repositoryId, buildCloudMemberStatus(config, repository.repositoryId, {
+                status: 'failed',
+                stale: true,
+                manifest: getCachedCloudMemberManifest(baseDirectory, config, repository.repositoryId),
+                error: error?.message || error,
+            }));
+        }
+    }
+
+    for (const member of members.values()) {
+        writeCloudPoolMemberMetadata(member, opened.descriptor);
+        try {
+            const committed = await commitCloudMemberChanges(
+                baseDirectory,
+                config,
+                member.memberConfig,
+                member.cloudPaths,
+                `Chat Vault cloud pool connect: ${config.deviceName || config.deviceId}`,
+            );
+            config = committed.config;
+            member.manifest = normalizeCloudManifest(readJson(member.cloudPaths.manifestPath, buildEmptyCloudManifest()));
+            statuses.set(member.repositoryId, buildCloudMemberStatus(config, member.repositoryId, {
+                manifest: member.manifest,
+            }));
+        } catch (error) {
+            statuses.set(member.repositoryId, buildCloudMemberStatus(config, member.repositoryId, {
+                status: 'failed',
+                stale: true,
+                manifest: member.manifest,
+                error: error?.message || error,
+            }));
+        }
+    }
+
+    const memberResults = Array.from(statuses.values());
+    return {
+        config,
+        descriptor: opened.descriptor,
+        manifest: buildAggregateCloudManifest(memberResults),
+        memberResults,
+    };
+}
+
+async function listCloudPoolScopes(baseDirectory) {
+    const opened = await openCloudPoolCatalog(baseDirectory);
+    const config = opened.config;
+    const memberResults = [buildCloudMemberStatus(config, opened.catalogConfig.repositoryId, {
+        manifest: opened.manifest,
+    })];
+    for (const repository of config.repositories) {
+        if (repository.repositoryId === opened.catalogConfig.repositoryId) {
+            continue;
+        }
+        try {
+            const member = await loadCloudPoolMember(baseDirectory, config, opened.descriptor, repository.repositoryId);
+            updateCloudRepositorySyncTimes(baseDirectory, config, repository.repositoryId, { lastPulledAt: Date.now() });
+            memberResults.push(buildCloudMemberStatus(config, repository.repositoryId, {
+                manifest: member.manifest,
+            }));
+        } catch (error) {
+            memberResults.push(buildCloudMemberStatus(config, repository.repositoryId, {
+                status: 'failed',
+                stale: true,
+                manifest: getCachedCloudMemberManifest(baseDirectory, config, repository.repositoryId),
+                error: error?.message || error,
+            }));
+        }
+    }
+    updateCloudRepositorySyncTimes(baseDirectory, config, opened.catalogConfig.repositoryId, { lastPulledAt: Date.now() });
+    return {
+        config: readCloudConfig(baseDirectory),
+        descriptor: opened.descriptor,
+        manifest: buildAggregateCloudManifest(memberResults),
+        memberResults,
+    };
+}
+
+async function pushCloudPoolSelectionToRemote(baseDirectory, directories) {
+    const opened = await openCloudPoolCatalog(baseDirectory);
+    let config = opened.config;
+    const members = new Map([[opened.catalogConfig.repositoryId, {
+        repositoryId: opened.catalogConfig.repositoryId,
+        memberConfig: opened.catalogConfig,
+        cloudPaths: opened.cloudPaths,
+        manifest: opened.manifest,
+    }]]);
+    const statuses = new Map([[opened.catalogConfig.repositoryId, buildCloudMemberStatus(config, opened.catalogConfig.repositoryId, {
+        manifest: opened.manifest,
+    })]]);
+
+    for (const repository of config.repositories) {
+        if (repository.repositoryId === opened.catalogConfig.repositoryId) {
+            continue;
+        }
+        try {
+            const member = await loadCloudPoolMember(baseDirectory, config, opened.descriptor, repository.repositoryId);
+            members.set(repository.repositoryId, member);
+            statuses.set(repository.repositoryId, buildCloudMemberStatus(config, repository.repositoryId, {
+                manifest: member.manifest,
+            }));
+        } catch (error) {
+            statuses.set(repository.repositoryId, buildCloudMemberStatus(config, repository.repositoryId, {
+                status: 'failed',
+                stale: true,
+                manifest: getCachedCloudMemberManifest(baseDirectory, config, repository.repositoryId),
+                error: error?.message || error,
+            }));
+        }
+    }
+
+    const assignment = assignCloudPoolScopes(
+        opened.descriptor,
+        collectLocalCloudScopeCandidates(baseDirectory, config),
+        Array.from(members.values()).map((member) => ({
+            repositoryId: member.repositoryId,
+            manifest: member.manifest,
+        })),
+        { availableRepositoryIds: Array.from(members.keys()) },
+    );
+    const descriptor = buildCloudPoolDescriptor(config, assignment.descriptor, { scopeHomes: assignment.descriptor.scopeHomes });
+
+    writeCloudPoolMemberMetadata(members.get(config.catalogRepositoryId), descriptor);
+    const catalogCommit = await commitCloudMemberChanges(
+        baseDirectory,
+        config,
+        members.get(config.catalogRepositoryId).memberConfig,
+        members.get(config.catalogRepositoryId).cloudPaths,
+        `Chat Vault cloud pool routing: ${config.deviceName || config.deviceId}`,
+    );
+    config = catalogCommit.config;
+
+    for (const member of members.values()) {
+        writeCloudPoolMemberMetadata(member, descriptor);
+    }
+    const selection = collectLocalCloudSelection(baseDirectory, config, directories, (scopeId) => {
+        const repositoryId = assignment.assignments.get(scopeId);
+        return members.get(repositoryId)?.cloudPaths || null;
+    });
+
+    for (const member of members.values()) {
+        const memberSelection = buildCloudPoolMemberSelection(selection, descriptor, member.repositoryId);
+        try {
+            writeCloudDeviceSelection(member.cloudPaths, config, memberSelection);
+            pruneCloudSnapshotChunks(member.cloudPaths.snapshotChunksRoot, collectReferencedCloudSnapshotChunkHashes(member.cloudPaths));
+            member.manifest = rebuildCloudManifest(member.cloudPaths);
+            const committed = await commitCloudMemberChanges(
+                baseDirectory,
+                config,
+                member.memberConfig,
+                member.cloudPaths,
+                `Chat Vault cloud sync: ${config.deviceName || config.deviceId}`,
+            );
+            config = committed.config;
+            statuses.set(member.repositoryId, buildCloudMemberStatus(config, member.repositoryId, {
+                manifest: member.manifest,
+            }));
+        } catch (error) {
+            statuses.set(member.repositoryId, buildCloudMemberStatus(config, member.repositoryId, {
+                status: 'failed',
+                stale: true,
+                manifest: member.manifest,
+                error: error?.message || error,
+            }));
+        }
+    }
+
+    const memberResults = Array.from(statuses.values());
+    const failedRepositoryIds = memberResults
+        .filter((member) => member.status !== 'ready')
+        .map((member) => member.repositoryId);
+    const failedScopeIds = Array.from(new Set([
+        ...selection.skipped.map((item) => asString(item.scopeId).trim()),
+        ...Object.entries(descriptor.scopeHomes)
+            .filter(([, home]) => failedRepositoryIds.includes(home.repositoryId))
+            .map(([scopeId]) => scopeId),
+    ].filter(Boolean)));
+    return {
+        config,
+        descriptor,
+        manifest: buildAggregateCloudManifest(memberResults),
+        selection,
+        pushed: memberResults.some((member) => member.status === 'ready'),
+        memberResults,
+        failedRepositoryIds,
+        failedScopeIds,
+    };
 }
 
 async function pushCloudSelectionToRemote(baseDirectory, directories) {
@@ -2987,15 +3570,17 @@ async function listRemoteCloudScopes(baseDirectory) {
     });
 }
 
-async function getRemoteCloudSnapshot(baseDirectory, scopeId, snapshotId) {
+async function getRemoteCloudSnapshot(baseDirectory, scopeId, snapshotId, repositoryId) {
     const config = readCloudConfig(baseDirectory);
-    if (!config.repoUrl || !config.githubToken) {
+    const memberConfig = getCloudRepositoryConfig(config, repositoryId);
+    if (!memberConfig.repositoryId || !memberConfig.repoUrl || !memberConfig.githubToken) {
         throw new Error('repo_url_or_token_missing');
     }
 
-    const repoPath = getCloudPaths(baseDirectory, config).repoPath;
+    const repoPath = getCloudPaths(baseDirectory, memberConfig).repoPath;
     return withCloudRepoOperationLock(repoPath, async () => {
-        const { cloudPaths, manifest } = await readCloudManifest(baseDirectory, config);
+        const { cloudPaths, manifest } = await readCloudManifest(baseDirectory, memberConfig);
+        assertCloudPoolRepositoryMembership(cloudPaths, config);
         const targetScope = manifest.scopes.find((scope) => asString(scope.scopeId).trim() === asString(scopeId).trim());
         const entry = targetScope?.entries?.find((item) => asString(item.snapshotId).trim() === asString(snapshotId).trim());
         if (!targetScope || !entry) {
@@ -3016,6 +3601,7 @@ async function getRemoteCloudSnapshot(baseDirectory, scopeId, snapshotId) {
         const summary = getSnapshotSummary(snapshot);
         return {
             config,
+            memberConfig,
             cloudPaths,
             scope: targetScope,
             entry,
@@ -3848,15 +4434,17 @@ function cleanupCloudAfterExplicitDelete(cloudPaths) {
     pruneCloudResources(cloudPaths, buildReferencedCloudResourceMap(cloudPaths, referencedMap));
 }
 
-async function deleteRemoteCloudSnapshot(baseDirectory, scopeId, snapshotId) {
+async function deleteRemoteCloudSnapshot(baseDirectory, scopeId, snapshotId, repositoryId) {
     const config = readCloudConfig(baseDirectory);
-    if (!config.repoUrl || !config.githubToken) {
+    const memberConfig = getCloudRepositoryConfig(config, repositoryId);
+    if (!memberConfig.repositoryId || !memberConfig.repoUrl || !memberConfig.githubToken) {
         throw new Error('repo_url_or_token_missing');
     }
 
-    const repoPath = getCloudPaths(baseDirectory, config).repoPath;
+    const repoPath = getCloudPaths(baseDirectory, memberConfig).repoPath;
     return withCloudRepoOperationLock(repoPath, async () => {
-        const cloudPaths = await ensureCloudRepositoryReady(baseDirectory, config);
+        const cloudPaths = await ensureCloudRepositoryReady(baseDirectory, memberConfig);
+        assertCloudPoolRepositoryMembership(cloudPaths, config);
         const objectPaths = getCloudObjectPaths(cloudPaths, scopeId, snapshotId);
         if (!fs.existsSync(objectPaths.metaPath)) {
             throw new Error('cloud_snapshot_not_found');
@@ -3876,17 +4464,16 @@ async function deleteRemoteCloudSnapshot(baseDirectory, scopeId, snapshotId) {
             if (!commitResult.ok && !commitResult.stderr.toLowerCase().includes('nothing to commit')) {
                 throw new Error(commitResult.stderr || 'failed to commit cloud delete');
             }
-            await pushCloudBranch(cloudPaths, config.branch, buildCloudGitAuthArgs(config));
+            await pushCloudBranch(cloudPaths, memberConfig.branch, buildCloudGitAuthArgs(memberConfig));
         }
 
-        saveCloudConfig(baseDirectory, {
-            ...config,
+        const nextConfig = updateCloudRepositorySyncTimes(baseDirectory, config, memberConfig.repositoryId, {
             lastPulledAt: Date.now(),
             lastPushedAt: Date.now(),
         });
 
         return {
-            config: readCloudConfig(baseDirectory),
+            config: nextConfig,
             manifest,
         };
     });
@@ -5091,13 +5678,18 @@ export async function init(router) {
         try {
             const baseDirectory = getBaseDirectory(request);
             const config = readCloudConfig(baseDirectory);
-            const cloudPaths = getCloudPaths(baseDirectory, config);
-            const manifest = normalizeCloudManifest(readJson(cloudPaths.manifestPath, buildEmptyCloudManifest()));
+            const memberResults = config.repositories.map((repository) => buildCloudMemberStatus(config, repository.repositoryId, {
+                status: repository.hasToken || config.defaultGithubToken || repository.githubTokenOverride ? 'ready' : 'missing_token',
+                stale: true,
+                manifest: getCachedCloudMemberManifest(baseDirectory, config, repository.repositoryId),
+            }));
+            const manifest = buildAggregateCloudManifest(memberResults);
             return response.send({
                 ok: true,
                 config: getSafeCloudConfig(config),
                 manifest,
-                connected: Boolean(config.repoUrl && config.githubToken),
+                memberResults,
+                connected: Boolean(config.catalogRepositoryId && config.repoUrl && config.githubToken),
             });
         } catch (error) {
             console.error('[chat-vault] Failed to read cloud status:', error);
@@ -5113,13 +5705,45 @@ export async function init(router) {
         try {
             const baseDirectory = getBaseDirectory(request);
             const currentConfig = readCloudConfig(baseDirectory);
+            const requestedRepositories = Array.isArray(request.body?.repositories)
+                ? request.body.repositories
+                : null;
+            if (requestedRepositories && requestedRepositories.length < currentConfig.repositories.length) {
+                return response.status(400).send({ ok: false, error: 'cloud_pool_member_removal_not_supported' });
+            }
+            const existingRepositories = new Map(currentConfig.repositories.map((repository) => [repository.repositoryId, repository]));
+            const nextRepositories = requestedRepositories
+                ? requestedRepositories.map((repository) => {
+                    const existing = existingRepositories.get(asString(repository?.repositoryId).trim());
+                    return {
+                        ...repository,
+                        repositoryId: existing?.repositoryId || repository?.repositoryId,
+                        githubTokenOverride: repository?.githubTokenOverride
+                            ? repository.githubTokenOverride
+                            : (existing?.githubTokenOverride || ''),
+                        addedAt: existing?.addedAt || repository?.addedAt || Date.now(),
+                        lastPulledAt: existing?.lastPulledAt || 0,
+                        lastPushedAt: existing?.lastPushedAt || 0,
+                    };
+                })
+                : currentConfig.repositories.map((repository, index) => index === 0
+                    ? {
+                        ...repository,
+                        repoUrl: request.body?.repoUrl !== undefined ? request.body.repoUrl : repository.repoUrl,
+                        branch: request.body?.branch !== undefined ? request.body.branch : repository.branch,
+                    }
+                    : repository);
+            if (!requestedRepositories && nextRepositories.length === 0 && asString(request.body?.repoUrl).trim()) {
+                nextRepositories.push({
+                    repoUrl: request.body.repoUrl,
+                    branch: request.body?.branch || DEFAULT_CLOUD_BRANCH,
+                    addedAt: Date.now(),
+                });
+            }
             const nextConfig = saveCloudConfig(baseDirectory, {
                 ...currentConfig,
-                repoUrl: request.body?.repoUrl !== undefined ? request.body.repoUrl : currentConfig.repoUrl,
-                branch: request.body?.branch !== undefined ? request.body.branch : currentConfig.branch,
-                githubToken: request.body?.githubToken
-                    ? request.body.githubToken
-                    : currentConfig.githubToken,
+                defaultGithubToken: request.body?.defaultGithubToken || request.body?.githubToken || currentConfig.defaultGithubToken,
+                repositories: nextRepositories,
                 deviceName: request.body?.deviceName !== undefined ? request.body.deviceName : currentConfig.deviceName,
                 syncPinned: request.body?.syncPinned !== undefined ? request.body.syncPinned : currentConfig.syncPinned,
                 syncLatestStable: request.body?.syncLatestStable !== undefined ? request.body.syncLatestStable : currentConfig.syncLatestStable,
@@ -5142,11 +5766,12 @@ export async function init(router) {
 
         try {
             const baseDirectory = getBaseDirectory(request);
-            const result = await connectCloudRemote(baseDirectory);
+            const result = await withCloudPoolOperationLock(baseDirectory, () => connectCloudPool(baseDirectory));
             return response.send({
                 ok: true,
                 config: getSafeCloudConfig(result.config),
                 manifest: result.manifest,
+                memberResults: result.memberResults,
             });
         } catch (error) {
             console.error('[chat-vault] Failed to connect cloud remote:', error);
@@ -5162,7 +5787,10 @@ export async function init(router) {
 
         try {
             const baseDirectory = getBaseDirectory(request);
-            const result = await pushCloudSelectionToRemote(baseDirectory, request.user.directories);
+            const result = await withCloudPoolOperationLock(
+                baseDirectory,
+                () => pushCloudPoolSelectionToRemote(baseDirectory, request.user.directories),
+            );
             return response.send({
                 ok: true,
                 config: getSafeCloudConfig(result.config),
@@ -5173,6 +5801,9 @@ export async function init(router) {
                 resourceCount: result.selection.resourceCount,
                 skippedCount: result.selection.skippedCount || 0,
                 skipped: result.selection.skipped || [],
+                memberResults: result.memberResults,
+                failedRepositoryIds: result.failedRepositoryIds,
+                failedScopeIds: result.failedScopeIds,
             });
         } catch (error) {
             console.error('[chat-vault] Failed to push cloud selection:', error);
@@ -5188,12 +5819,13 @@ export async function init(router) {
 
         try {
             const baseDirectory = getBaseDirectory(request);
-            const result = await listRemoteCloudScopes(baseDirectory);
+            const result = await withCloudPoolOperationLock(baseDirectory, () => listCloudPoolScopes(baseDirectory));
             return response.send({
                 ok: true,
                 config: getSafeCloudConfig(result.config),
                 manifest: result.manifest,
                 scopes: result.manifest.scopes,
+                memberResults: result.memberResults,
             });
         } catch (error) {
             console.error('[chat-vault] Failed to list cloud scopes:', error);
@@ -5210,12 +5842,16 @@ export async function init(router) {
         try {
             const scopeId = asString(request.body?.scopeId).trim();
             const snapshotId = asString(request.body?.snapshotId).trim();
-            if (!scopeId || !snapshotId) {
-                return response.status(400).send({ ok: false, error: 'scopeId_and_snapshotId_are_required' });
+            const repositoryId = asString(request.body?.repositoryId).trim();
+            if (!scopeId || !snapshotId || !repositoryId) {
+                return response.status(400).send({ ok: false, error: 'repositoryId_scopeId_and_snapshotId_are_required' });
             }
 
             const baseDirectory = getBaseDirectory(request);
-            const result = await getRemoteCloudSnapshot(baseDirectory, scopeId, snapshotId);
+            const result = await withCloudPoolOperationLock(
+                baseDirectory,
+                () => getRemoteCloudSnapshot(baseDirectory, scopeId, snapshotId, repositoryId),
+            );
             return response.send({
                 ok: true,
                 scope: result.scope,
@@ -5243,12 +5879,16 @@ export async function init(router) {
         try {
             const scopeId = asString(request.body?.scopeId).trim();
             const snapshotId = asString(request.body?.snapshotId).trim();
-            if (!scopeId || !snapshotId) {
-                return response.status(400).send({ ok: false, error: 'scopeId_and_snapshotId_are_required' });
+            const repositoryId = asString(request.body?.repositoryId).trim();
+            if (!scopeId || !snapshotId || !repositoryId) {
+                return response.status(400).send({ ok: false, error: 'repositoryId_scopeId_and_snapshotId_are_required' });
             }
 
             const baseDirectory = getBaseDirectory(request);
-            const remoteSnapshot = await getRemoteCloudSnapshot(baseDirectory, scopeId, snapshotId);
+            const remoteSnapshot = await withCloudPoolOperationLock(
+                baseDirectory,
+                () => getRemoteCloudSnapshot(baseDirectory, scopeId, snapshotId, repositoryId),
+            );
             const prepared = prepareCloudSnapshotResources(request.user.directories, remoteSnapshot.cloudPaths, remoteSnapshot.meta, remoteSnapshot.snapshot);
             return response.send({
                 ok: true,
@@ -5278,12 +5918,16 @@ export async function init(router) {
         try {
             const scopeId = asString(request.body?.scopeId).trim();
             const snapshotId = asString(request.body?.snapshotId).trim();
-            if (!scopeId || !snapshotId) {
-                return response.status(400).send({ ok: false, error: 'scopeId_and_snapshotId_are_required' });
+            const repositoryId = asString(request.body?.repositoryId).trim();
+            if (!scopeId || !snapshotId || !repositoryId) {
+                return response.status(400).send({ ok: false, error: 'repositoryId_scopeId_and_snapshotId_are_required' });
             }
 
             const baseDirectory = getBaseDirectory(request);
-            const remoteSnapshot = await getRemoteCloudSnapshot(baseDirectory, scopeId, snapshotId);
+            const remoteSnapshot = await withCloudPoolOperationLock(
+                baseDirectory,
+                () => getRemoteCloudSnapshot(baseDirectory, scopeId, snapshotId, repositoryId),
+            );
             const prepared = prepareCloudSnapshotResources(request.user.directories, remoteSnapshot.cloudPaths, remoteSnapshot.meta, remoteSnapshot.snapshot);
             const imported = importCloudSnapshotIntoLocal(baseDirectory, prepared.meta, prepared.snapshot);
             return response.send({
@@ -5311,16 +5955,22 @@ export async function init(router) {
         try {
             const scopeId = asString(request.body?.scopeId).trim();
             const snapshotId = asString(request.body?.snapshotId).trim();
-            if (!scopeId || !snapshotId) {
-                return response.status(400).send({ ok: false, error: 'scopeId_and_snapshotId_are_required' });
+            const repositoryId = asString(request.body?.repositoryId).trim();
+            if (!scopeId || !snapshotId || !repositoryId) {
+                return response.status(400).send({ ok: false, error: 'repositoryId_scopeId_and_snapshotId_are_required' });
             }
 
             const baseDirectory = getBaseDirectory(request);
-            const result = await deleteRemoteCloudSnapshot(baseDirectory, scopeId, snapshotId);
+            const { result, refreshed } = await withCloudPoolOperationLock(baseDirectory, async () => {
+                const deleted = await deleteRemoteCloudSnapshot(baseDirectory, scopeId, snapshotId, repositoryId);
+                const listed = await listCloudPoolScopes(baseDirectory);
+                return { result: deleted, refreshed: listed };
+            });
             return response.send({
                 ok: true,
-                config: getSafeCloudConfig(result.config),
-                manifest: result.manifest,
+                config: getSafeCloudConfig(refreshed.config || result.config),
+                manifest: refreshed.manifest,
+                memberResults: refreshed.memberResults,
             });
         } catch (error) {
             console.error('[chat-vault] Failed to delete cloud snapshot:', error);

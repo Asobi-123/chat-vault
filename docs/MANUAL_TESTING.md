@@ -181,6 +181,33 @@ Expected:
 - No missing i18n keys appear.
 - Mobile layout remains usable and the floating orb stays in a visible position.
 
+## 11. Cloud Repository Pool
+
+Use three disposable repositories. The first two must be writable. Configure the third with a deliberately invalid URL or credentials.
+
+Steps:
+
+1. Start from an existing one-repository Cloud Vault and upgrade to this version. Resize the browser to a half-height window, then open the panel and the cloud tab without changing fields. Confirm the panel title, tabs, action row, and the two cloud browsing columns all remain inside the visible viewport. Confirm the `?` help button opens the usage explanation.
+2. Confirm that old remote backups still list, preview, import, and restore normally.
+3. Select `Manage Repositories`. Confirm `Sync Settings` is visible above `Repository Pool`, and the repository editor shows URL, access token, and branch without an expandable advanced section. Then select `Add Repository`. Confirm the URL field receives focus. Cancel once and confirm no empty repository row remains. Add it again, leaving the optional access token blank when the catalog token can access it, then use `Add and Connect`.
+4. Create or select several independent chat scopes, make one stable or long-term backup in each, then sync again.
+5. Check that the repository manager shows two available repositories, and that cloud backup cards show a repository tag. Preview, import, restore-as-new, and delete one backup from each repository.
+6. Add or retain an invalid third repository, then sync. Refresh the cloud list afterwards.
+7. On another device, connect only the catalog repository using the normal first-repository flow. Confirm that the additional repository URL is discovered. Provide a local token if that repository is private, then refresh and restore an entry from it.
+8. Add another healthy repository and sync again. Confirm existing scope entries keep their original repository tags rather than moving automatically.
+
+Expected:
+
+- Existing one-repository data remains readable without re-entering the old token or moving remote objects.
+- The Cloud Vault landing view shows sync, repository management, and the two remote browsing columns without a long configuration form pushing the lists out of the initial view.
+- Cancelling an added repository leaves no blank repository in the local configuration. `Add and Connect` saves and verifies a valid repository in one action.
+- A shared default token is reused for a newly added repository; an override is needed only for a different permission boundary.
+- Each scope's complete cloud copy remains in one repository. Large snapshots still restore through their existing chunk path.
+- The aggregate list can operate on entries from both healthy repositories, and each action reaches its tagged source repository.
+- The failing repository is marked unavailable. Healthy repositories still complete, and the completion notice identifies a partial result.
+- The other device discovers repository URLs but never receives a token from `vault-pool.json`.
+- No existing scope is automatically rebalanced, deleted, or moved after adding a repository.
+
 ## Release Gate
 
 Before pushing or tagging a public release:
@@ -196,3 +223,4 @@ Before pushing or tagging a public release:
   - `uninstall.mjs`
   - `sillytavern-paths.mjs`
 - `node tests/cloud-snapshot.test.mjs` passes. It generates a disposable 100+ MiB JSONL fixture, verifies chunked cloud storage and restore, then commits and pushes the resulting small Git blobs to a temporary bare remote.
+- `node tests/cloud-pool.test.mjs` passes. It validates v1 migration, stable routing, aggregate provenance, two healthy temporary bare remotes, and one failing repository remote.

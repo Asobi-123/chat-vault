@@ -1,3 +1,29 @@
+#chat_vault_settings {
+    --cvt-bg: #171d25;
+    --cvt-surface: #222b36;
+    --cvt-field: #10171f;
+    --cvt-border: #465568;
+    --cvt-text: #edf2f7;
+    --cvt-dim: #a7b3c2;
+    --cvt-accent: #76b7f2;
+    --cvt-accent-soft: rgba(118, 183, 242, 0.16);
+    --cvt-checkbox-tick: #0b1620;
+    color: var(--cvt-text);
+}
+
+#chat_vault_settings .inline-drawer-header,
+#chat_vault_settings .inline-drawer-content {
+    background: var(--cvt-bg);
+    color: var(--cvt-text);
+    border-color: var(--cvt-border);
+}
+
+#chat_vault_settings .menu_button {
+    border: 1px solid color-mix(in srgb, var(--cvt-border) 50%, transparent) !important;
+    background: color-mix(in srgb, var(--cvt-field) 90%, transparent) !important;
+    color: var(--cvt-text) !important;
+}
+
 #chat_vault_settings .cvt-sidebar-status {
     display: flex;
     align-items: center;
@@ -59,6 +85,9 @@
 }
 
 .cvt-trigger {
+    --cvt-trigger-bg: #171d25;
+    --cvt-trigger-border: #465568;
+    --cvt-trigger-text: #edf2f7;
     position: fixed;
     right: 18px;
     bottom: 84px;
@@ -66,9 +95,9 @@
     width: 46px;
     height: 46px;
     border-radius: 999px;
-    border: 1px solid var(--SmartThemeBorderColor, #435366);
-    background: color-mix(in srgb, var(--SmartThemeBlurTintColor, #182028) 88%, transparent);
-    color: var(--SmartThemeFontColor, #eef3f7);
+    border: 1px solid var(--cvt-trigger-border);
+    background: color-mix(in srgb, var(--cvt-trigger-bg) 88%, transparent);
+    color: var(--cvt-trigger-text);
     cursor: grab;
     box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
     touch-action: none;
@@ -97,29 +126,39 @@
     font-size: 15px;
 }
 
-.cvt-overlay {
-    position: fixed;
-    inset: 0;
-    z-index: 9001;
-    display: none;
-    align-items: center;
-    justify-content: center;
-    padding: 14px;
+dialog.cvt-overlay {
+    width: min(980px, calc(100vw - 28px));
+    height: min(86dvh, 900px);
+    max-height: min(calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 24px), 900px);
+    margin: calc(env(safe-area-inset-top, 0px) + 12px) auto calc(env(safe-area-inset-bottom, 0px) + 12px);
+    padding: 0;
+    border: 0;
+    background: transparent;
+    overflow: visible;
+}
+
+dialog.cvt-overlay[open] {
+    display: block;
+}
+
+dialog.cvt-overlay::backdrop {
     background: rgba(0, 0, 0, 0.45);
     backdrop-filter: blur(6px);
 }
 
 .cvt-modal {
-    --cvt-bg: var(--SmartThemeBlurTintColor, #182028);
-    --cvt-surface: color-mix(in srgb, var(--SmartThemeBlurTintColor, #232d39) 100%, white 4%);
-    --cvt-field: color-mix(in srgb, var(--SmartThemeBlurTintColor, #121920) 100%, black 8%);
-    --cvt-border: var(--SmartThemeBorderColor, #435366);
-    --cvt-text: var(--SmartThemeFontColor, #eef3f7);
-    --cvt-dim: color-mix(in srgb, var(--SmartThemeFontColor, #eef3f7) 55%, transparent);
-    --cvt-accent: var(--SmartThemeQuoteColor, #c79416);
-    --cvt-accent-soft: color-mix(in srgb, var(--SmartThemeQuoteColor, #c79416) 16%, transparent);
-    width: min(980px, calc(100vw - 28px));
-    max-height: min(86vh, 900px);
+    --cvt-bg: #171d25;
+    --cvt-surface: #222b36;
+    --cvt-field: #10171f;
+    --cvt-border: #465568;
+    --cvt-text: #edf2f7;
+    --cvt-dim: #a7b3c2;
+    --cvt-accent: #76b7f2;
+    --cvt-accent-soft: rgba(118, 183, 242, 0.16);
+    --cvt-checkbox-tick: #0b1620;
+    width: 100%;
+    height: 100%;
+    max-height: 100%;
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -385,8 +424,182 @@
     margin-top: 10px;
 }
 
+.cvt-cloud-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.cvt-cloud-primary {
+    border-color: color-mix(in srgb, var(--cvt-accent) 55%, var(--cvt-border)) !important;
+    background: var(--cvt-accent-soft) !important;
+}
+
+.cvt-icon-button {
+    width: 36px !important;
+    min-width: 36px !important;
+    height: 36px;
+    min-height: 36px;
+    padding: 0 !important;
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
+}
+
+.cvt-cloud-actions .menu_button {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+}
+
+dialog.cvt-cloud-manager {
+    --cvt-bg: #171d25;
+    --cvt-surface: #222b36;
+    --cvt-field: #10171f;
+    --cvt-border: #465568;
+    --cvt-text: #edf2f7;
+    --cvt-dim: #a7b3c2;
+    --cvt-accent: #76b7f2;
+    --cvt-accent-soft: rgba(118, 183, 242, 0.16);
+    --cvt-checkbox-tick: #0b1620;
+    width: min(640px, calc(100vw - 32px));
+    max-height: min(82dvh, 760px);
+    margin: auto;
+    padding: 0;
+    border: 1px solid var(--cvt-border);
+    border-radius: 12px;
+    background: var(--cvt-bg);
+    color: var(--cvt-text);
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
+    font-family: inherit;
+    overflow: hidden;
+}
+
+dialog.cvt-cloud-manager[open] {
+    display: flex;
+    flex-direction: column;
+}
+
+dialog.cvt-cloud-manager::backdrop {
+    background: rgba(0, 0, 0, 0.62);
+    backdrop-filter: blur(4px);
+}
+
+.cvt-cloud-manager-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 14px 14px 10px;
+    border-bottom: 1px solid color-mix(in srgb, var(--cvt-border) 55%, transparent);
+    flex-shrink: 0;
+}
+
+.cvt-cloud-manager-header > div {
+    display: grid;
+    gap: 3px;
+}
+
+.cvt-cloud-manager-header strong {
+    font-size: 15px;
+}
+
+.cvt-cloud-manager-header span {
+    color: var(--cvt-dim);
+    font-size: 12px;
+    line-height: 1.45;
+}
+
+.cvt-cloud-manager-body {
+    display: grid;
+    gap: 12px;
+    overflow-y: auto;
+    padding: 14px;
+    overscroll-behavior: contain;
+}
+
+.cvt-cloud-repository-list {
+    display: grid;
+    border-top: 1px solid color-mix(in srgb, var(--cvt-border) 45%, transparent);
+}
+
+.cvt-cloud-repository-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 0;
+    border-bottom: 1px solid color-mix(in srgb, var(--cvt-border) 45%, transparent);
+}
+
+.cvt-cloud-repository-main {
+    min-width: 0;
+    display: grid;
+    gap: 2px;
+}
+
+.cvt-cloud-repository-main strong {
+    font-size: 12px;
+}
+
+.cvt-cloud-repository-url {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13px;
+}
+
+.cvt-cloud-repository-meta {
+    color: var(--cvt-dim);
+    font-size: 12px;
+}
+
+.cvt-cloud-repository-actions {
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+    gap: 6px;
+}
+
+.cvt-cloud-manager-editor {
+    display: grid;
+    gap: 10px;
+    padding-top: 12px;
+    border-top: 1px solid color-mix(in srgb, var(--cvt-accent) 34%, var(--cvt-border));
+}
+
+.cvt-cloud-manager-settings {
+    display: grid;
+    gap: 10px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid color-mix(in srgb, var(--cvt-border) 45%, transparent);
+}
+
+.cvt-cloud-manager-fields {
+    display: grid;
+    gap: 10px;
+}
+
+.cvt-cloud-help-content {
+    display: grid;
+    gap: 10px;
+}
+
+.cvt-cloud-help-content > .cvt-note {
+    margin: 0;
+}
+
+.cvt-cloud-manager-error {
+    color: #cc4c4c;
+    font-size: 12px;
+    line-height: 1.5;
+}
+
 .cvt-modal .text_pole,
-.cvt-modal select {
+.cvt-modal select,
+.cvt-cloud-manager .text_pole,
+.cvt-cloud-manager select {
     border: 1px solid color-mix(in srgb, var(--cvt-border) 50%, transparent) !important;
     border-radius: 12px !important;
     background: var(--cvt-field) !important;
@@ -399,11 +612,166 @@
     box-sizing: border-box;
 }
 
-.cvt-modal input[type="checkbox"] {
+.cvt-modal .text_pole::placeholder,
+.cvt-cloud-manager .text_pole::placeholder {
+    color: var(--cvt-dim) !important;
+    opacity: 0.78;
+}
+
+.cvt-modal .text_pole:focus,
+.cvt-modal select:focus,
+.cvt-cloud-manager .text_pole:focus,
+.cvt-cloud-manager select:focus {
+    border-color: var(--cvt-accent) !important;
+    outline: none;
+}
+
+.cvt-modal .text_pole:disabled,
+.cvt-modal select:disabled,
+.cvt-cloud-manager .text_pole:disabled,
+.cvt-cloud-manager select:disabled {
+    color: var(--cvt-dim) !important;
+    opacity: 0.7;
+}
+
+.cvt-modal select option,
+.cvt-cloud-manager select option {
+    background: var(--cvt-field);
+    color: var(--cvt-text);
+}
+
+.cvt-modal code,
+.cvt-cloud-manager code {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--cvt-text);
+}
+
+.cvt-body,
+.cvt-card-body-scroll,
+.cvt-cloud-manager-body,
+.cvm-diff-full {
+    scrollbar-color: color-mix(in srgb, var(--cvt-accent) 72%, var(--cvt-border)) var(--cvt-field) !important;
+    scrollbar-width: thin !important;
+}
+
+.cvt-body::-webkit-scrollbar,
+.cvt-card-body-scroll::-webkit-scrollbar,
+.cvt-cloud-manager-body::-webkit-scrollbar,
+.cvm-diff-full::-webkit-scrollbar {
+    width: 10px !important;
+    height: 10px !important;
+}
+
+.cvt-body::-webkit-scrollbar-track,
+.cvt-card-body-scroll::-webkit-scrollbar-track,
+.cvt-cloud-manager-body::-webkit-scrollbar-track,
+.cvm-diff-full::-webkit-scrollbar-track {
+    background: var(--cvt-field) !important;
+    border-radius: 999px;
+}
+
+.cvt-body::-webkit-scrollbar-thumb,
+.cvt-card-body-scroll::-webkit-scrollbar-thumb,
+.cvt-cloud-manager-body::-webkit-scrollbar-thumb,
+.cvm-diff-full::-webkit-scrollbar-thumb {
+    border: 2px solid var(--cvt-field) !important;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--cvt-accent) 72%, var(--cvt-border)) !important;
+}
+
+.cvt-body::-webkit-scrollbar-thumb:hover,
+.cvt-card-body-scroll::-webkit-scrollbar-thumb:hover,
+.cvt-cloud-manager-body::-webkit-scrollbar-thumb:hover,
+.cvm-diff-full::-webkit-scrollbar-thumb:hover {
+    background: var(--cvt-accent) !important;
+}
+
+.cvt-modal input[type="checkbox"],
+.cvt-cloud-manager input[type="checkbox"],
+#chat_vault_settings input[type="checkbox"] {
     width: 17px;
     height: 17px;
+    margin: 0;
+    appearance: none;
+    -webkit-appearance: none;
+    display: inline-grid;
+    place-content: center;
+    box-sizing: border-box;
+    border: 2px solid var(--cvt-border);
+    border-radius: 5px;
+    background: var(--cvt-field);
+    outline: none !important;
+    box-shadow: none !important;
+    filter: none !important;
+    transform: none !important;
     cursor: pointer;
     flex-shrink: 0;
+}
+
+.cvt-modal input[type="checkbox"]:checked,
+.cvt-cloud-manager input[type="checkbox"]:checked,
+#chat_vault_settings input[type="checkbox"]:checked {
+    border-color: var(--cvt-accent);
+    background: var(--cvt-accent);
+}
+
+.cvt-modal input[type="checkbox"]::before,
+.cvt-cloud-manager input[type="checkbox"]::before,
+#chat_vault_settings input[type="checkbox"]::before {
+    content: "";
+    width: 0.65em;
+    height: 0.65em;
+    transform: scale(0);
+    transform-origin: bottom left;
+    transition: transform 0.12s ease-in-out;
+    box-shadow: inset 1em 1em var(--cvt-checkbox-tick) !important;
+    clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
+}
+
+.cvt-modal input[type="checkbox"]:checked::before,
+.cvt-cloud-manager input[type="checkbox"]:checked::before,
+#chat_vault_settings input[type="checkbox"]:checked::before {
+    transform: scale(1);
+}
+
+.cvt-modal input[type="checkbox"]:focus-visible,
+.cvt-cloud-manager input[type="checkbox"]:focus-visible,
+#chat_vault_settings input[type="checkbox"]:focus-visible,
+.cvt-modal input[type="radio"]:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--cvt-accent) 70%, transparent);
+    outline-offset: 2px;
+}
+
+.cvt-modal input[type="checkbox"]:disabled,
+.cvt-cloud-manager input[type="checkbox"]:disabled,
+#chat_vault_settings input[type="checkbox"]:disabled {
+    cursor: default;
+    opacity: 0.52;
+}
+
+.cvt-modal input[type="radio"] {
+    width: 17px;
+    height: 17px;
+    margin: 0;
+    appearance: none;
+    -webkit-appearance: none;
+    box-sizing: border-box;
+    border: 2px solid var(--cvt-border);
+    border-radius: 50%;
+    background: var(--cvt-field);
+    outline: none !important;
+    box-shadow: none !important;
+    filter: none !important;
+    transform: none !important;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.cvt-modal input[type="radio"]:checked {
+    border-color: var(--cvt-accent);
+    background: radial-gradient(circle, var(--cvt-accent) 0 43%, var(--cvt-field) 48%);
 }
 
 .cvt-toolbar,
@@ -414,7 +782,8 @@
 }
 
 #chat_vault_settings .menu_button,
-.cvt-modal .menu_button {
+.cvt-modal .menu_button,
+.cvt-cloud-manager .menu_button {
     flex: 0 0 auto;
     width: auto;
     min-width: fit-content;
@@ -424,7 +793,8 @@
     word-break: keep-all !important;
 }
 
-.cvt-modal .menu_button {
+.cvt-modal .menu_button,
+.cvt-cloud-manager .menu_button {
     border: 1px solid color-mix(in srgb, var(--cvt-border) 50%, transparent) !important;
     border-radius: 12px !important;
     background: color-mix(in srgb, var(--cvt-field) 90%, transparent) !important;
@@ -438,11 +808,13 @@
     transition: filter 0.12s;
 }
 
-.cvt-modal .menu_button:hover {
+.cvt-modal .menu_button:hover,
+.cvt-cloud-manager .menu_button:hover {
     filter: brightness(1.12);
 }
 
-.cvt-modal .menu_button:disabled {
+.cvt-modal .menu_button:disabled,
+.cvt-cloud-manager .menu_button:disabled {
     opacity: 0.4;
     cursor: default;
 }
@@ -594,16 +966,34 @@
         bottom: auto;
     }
 
-    .cvt-overlay {
-        align-items: flex-start;
-        justify-content: center;
-        padding: calc(env(safe-area-inset-top, 0px) + 8px) 10px 12px;
+    dialog.cvt-overlay {
+        width: calc(100vw - 16px);
+        height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 24px);
+        max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 24px);
+        margin: calc(env(safe-area-inset-top, 0px) + 12px) auto calc(env(safe-area-inset-bottom, 0px) + 12px);
     }
 
     .cvt-modal {
-        width: min(92vw, 390px);
-        max-height: min(78dvh, 700px);
+        width: 100%;
+        max-height: 100%;
         border-radius: 16px;
+    }
+
+    dialog.cvt-cloud-manager {
+        width: calc(100vw - 16px);
+        max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 24px);
+        margin: calc(env(safe-area-inset-top, 0px) + 12px) auto calc(env(safe-area-inset-bottom, 0px) + 12px);
+        border-radius: 10px;
+    }
+
+    .cvt-cloud-manager-header,
+    .cvt-cloud-manager-body {
+        padding-left: 12px;
+        padding-right: 12px;
+    }
+
+    .cvt-cloud-repository-row {
+        align-items: flex-start;
     }
 
     .cvt-header {
@@ -684,7 +1074,8 @@
         gap: 6px;
     }
 
-    .cvt-modal .menu_button {
+    .cvt-modal .menu_button,
+    .cvt-cloud-manager .menu_button {
         min-height: 32px;
         font-size: 12px;
     }
@@ -714,7 +1105,7 @@
 
 .cvm-card-row {
     padding: 6px 0;
-    border-bottom: 1px dashed var(--cvt-border, rgba(255, 255, 255, 0.08));
+    border-bottom: 1px dashed var(--cvt-border);
 }
 
 .cvm-card-row:last-child {
@@ -742,10 +1133,10 @@
 }
 
 .cvm-candidate-card {
-    border: 1px solid var(--cvt-border, rgba(255, 255, 255, 0.12));
+    border: 1px solid var(--cvt-border);
     border-radius: 6px;
     padding: 10px 12px;
-    background: var(--cvt-field-bg, rgba(0, 0, 0, 0.16));
+    background: var(--cvt-field);
 }
 
 .cvm-candidate-label {
@@ -769,7 +1160,7 @@
 }
 
 .cvm-candidate-row > span:first-child {
-    color: var(--cvt-dim, rgba(255, 255, 255, 0.5));
+    color: var(--cvt-dim);
 }
 
 .cvm-diff-list {
@@ -784,7 +1175,7 @@
     flex-wrap: wrap;
     padding: 6px 10px;
     margin-top: 6px;
-    background: var(--cvt-field-bg, rgba(0, 0, 0, 0.16));
+    background: var(--cvt-field);
     border-radius: 4px;
     font-size: 12px;
 }
@@ -801,7 +1192,7 @@
     padding: 8px 10px;
     border-radius: 4px;
     margin-bottom: 6px;
-    background: var(--cvt-field-bg, rgba(0, 0, 0, 0.16));
+    background: var(--cvt-field);
 }
 
 .cvm-diff-row.cvm-diff-same {
@@ -816,7 +1207,7 @@
 .cvm-diff-cell {
     font-size: 12px;
     padding: 4px 0;
-    color: var(--cvt-text, inherit);
+    color: var(--cvt-text);
     word-break: break-word;
     white-space: pre-wrap;
 }
@@ -841,8 +1232,8 @@
 .cvm-diff-full {
     margin: 6px 0 0;
     padding: 10px 12px;
-    background: var(--cvt-bg, rgba(0, 0, 0, 0.32));
-    border: 1px solid var(--cvt-border, rgba(255, 255, 255, 0.1));
+    background: var(--cvt-bg);
+    border: 1px solid var(--cvt-border);
     border-radius: 4px;
     max-height: 360px;
     overflow: auto;
@@ -890,7 +1281,7 @@
 
 .cvm-archive-row {
     padding: 10px 0;
-    border-bottom: 1px dashed var(--cvt-border, rgba(255, 255, 255, 0.08));
+    border-bottom: 1px dashed var(--cvt-border);
     display: flex;
     flex-direction: column;
     gap: 8px;

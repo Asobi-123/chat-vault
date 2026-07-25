@@ -69,6 +69,7 @@ chat-vault/
       <repoKey>/
         repo/
           vault.json
+          vault-pool.json
           manifest.json
           devices/
             <deviceId>.json
@@ -93,19 +94,30 @@ Shape:
 
 ```json
 {
-  "version": 1,
-  "repoUrl": "https://github.com/owner/repo.git",
-  "branch": "main",
-  "githubToken": "server-side only",
+  "version": 2,
+  "poolId": "pool-...",
+  "catalogRepositoryId": "repo-...",
+  "defaultGithubToken": "server-side only",
   "deviceId": "device-a1b2c3d4e5f6",
   "deviceName": "Mac mini",
   "syncPinned": true,
   "syncLatestStable": true,
   "syncDrafts": false,
-  "lastPulledAt": 1775373879279,
-  "lastPushedAt": 1775373879279
+  "repositories": [
+    {
+      "repositoryId": "repo-...",
+      "repoUrl": "https://github.com/owner/repo.git",
+      "branch": "main",
+      "githubTokenOverride": "server-side only or empty",
+      "addedAt": 1775373879279,
+      "lastPulledAt": 1775373879279,
+      "lastPushedAt": 1775373879279
+    }
+  ]
 }
 ```
+
+`version: 1` is read as a one-repository pool. Its existing `repoUrl`, `branch`, and `githubToken` become the catalog repository and `defaultGithubToken`; no remote object is moved.
 
 ## Scope Alias File
 
@@ -290,9 +302,48 @@ Shape:
   "storage": "git-cloud-vault",
   "repoKey": "sha1...",
   "branch": "main",
+  "poolId": "pool-...",
+  "repositoryId": "repo-...",
   "createdAt": 1775373879279
 }
 ```
+
+`poolId` and `repositoryId` are optional on older repositories. They are added when that repository joins a pool and prevent a configured repository from being mistaken for a different pool repository.
+
+## Cloud Pool Descriptor
+
+Stored in every healthy repository:
+
+- `cloud/remotes/<repoKey>/repo/vault-pool.json`
+
+Shape:
+
+```json
+{
+  "version": 1,
+  "poolId": "pool-...",
+  "catalogRepositoryId": "repo-catalog...",
+  "members": [
+    {
+      "repositoryId": "repo-catalog...",
+      "repoUrl": "https://github.com/owner/vault-a.git",
+      "branch": "main",
+      "addedAt": 1775373879279
+    }
+  ],
+  "scopeHomes": {
+    "83e93963bba31b5cebdc": {
+      "repositoryId": "repo-catalog...",
+      "assignedAt": 1775373879279,
+      "assignedLogicalBytes": 110100480
+    }
+  },
+  "createdAt": 1775373879279,
+  "updatedAt": 1775373879279
+}
+```
+
+The descriptor deliberately contains no token, local filesystem path, or device name. The catalog repository is the serialized source for new assignments; the same descriptor is copied to healthy data repositories after it commits.
 
 ## Cloud Device State
 
@@ -357,6 +408,7 @@ Shape:
   "lastMessagePreview": "last message preview",
   "lastMessageName": "Assistant",
   "lastMessageAt": "2026-04-05 @12h 44m 39s",
+  "logicalBytes": 110100480,
   "resources": [
     {
       "kind": "character_card",
@@ -454,6 +506,7 @@ Shape:
   "scopeCount": 1,
   "snapshotCount": 2,
   "deviceCount": 2,
+  "logicalBytes": 220200960,
   "scopes": [
     {
       "scopeId": "83e93963bba31b5cebdc",
@@ -462,6 +515,7 @@ Shape:
       "updatedAt": 1775373879279,
       "entryCount": 2,
       "deviceCount": 2,
+      "logicalBytes": 220200960,
       "devices": [
         {
           "deviceId": "device-a1b2c3d4e5f6",
@@ -484,6 +538,7 @@ Shape:
           "lastMessagePreview": "last message preview",
           "lastMessageName": "Assistant",
           "lastMessageAt": "2026-04-05 @12h 44m 39s",
+          "logicalBytes": 110100480,
           "label": "Character",
           "source": {},
           "resources": [],
@@ -512,3 +567,5 @@ Notes:
 - local deletion on one device does not silently remove older cloud snapshots
 - cloud cleanup happens only through explicit per-backup deletion
 - a failed local snapshot is omitted from that sync only; other selected snapshots continue, and the response reports its skip
+- in a repository pool, this manifest remains local to one repository; the panel aggregates it and adds `repositoryId` only to the API response, not to this stored file
+- `logicalBytes` is the selected JSONL payload size used to choose a home for new scopes. Older metas and manifests without it remain readable and contribute `0` until rewritten
